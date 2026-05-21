@@ -433,7 +433,7 @@ pub async fn set_update_config(
 /// POST /api/admin/system/update/pull
 /// 拉取配置的 GHCR 镜像
 pub async fn pull_update_image(State(state): State<AdminState>) -> impl IntoResponse {
-    match state.service.pull_update_image() {
+    match state.service.pull_update_image().await {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
@@ -442,7 +442,7 @@ pub async fn pull_update_image(State(state): State<AdminState>) -> impl IntoResp
 /// POST /api/admin/system/update/apply
 /// 拉取镜像并通过 docker compose 重建服务
 pub async fn apply_image_update(State(state): State<AdminState>) -> impl IntoResponse {
-    match state.service.apply_image_update() {
+    match state.service.apply_image_update().await {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
@@ -451,7 +451,7 @@ pub async fn apply_image_update(State(state): State<AdminState>) -> impl IntoRes
 /// POST /api/admin/system/update/rollback
 /// 回退到上一次更新前的镜像版本（使用本地备份 tag，无需联网）
 pub async fn rollback_image_update(State(state): State<AdminState>) -> impl IntoResponse {
-    match state.service.rollback_image_update() {
+    match state.service.rollback_image_update().await {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }

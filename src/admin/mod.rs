@@ -23,6 +23,7 @@ pub mod proxy_pool;
 mod router;
 mod service;
 pub mod types;
+mod binary_update;
 
 pub use middleware::AdminState;
 pub use router::create_admin_router;

@@ -19,7 +19,7 @@ RUN cargo build --release --no-default-features
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates docker-cli docker-cli-compose
+RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 COPY --from=builder /app/target/release/kiro-rs /app/kiro-rs

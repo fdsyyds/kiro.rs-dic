@@ -8,8 +8,6 @@ services:
       - "8990:8990"
     volumes:
       - ./data/:/app/config/
-      - ./docker-compose.yml:/app/config/docker-compose.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       redis:
         condition: service_healthy

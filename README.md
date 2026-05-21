@@ -179,8 +179,6 @@ cd /opt/kiro-rs
 ```yaml
 volumes:
   - ./data/:/app/config/
-  - ./docker-compose.yml:/app/config/docker-compose.yml:ro
-  - /var/run/docker.sock:/var/run/docker.sock
 ```
 
 启动：
@@ -497,26 +495,25 @@ RUST_LOG=debug ./target/release/kiro-rs
 - **Admin UI**
   - `GET /admin` - 访问管理页面（需要在编译前构建 `admin-ui/dist`）
 
-### 在线更新镜像
+### 在线更新
 
 Admin UI 顶部的「镜像在线更新」入口支持：
 
-- 配置 Docker Hub 镜像地址（默认 `zyphrzero/kiro-rs:latest`）
-- 一键拉取镜像并通过 docker compose 重建容器；compose 文件路径与 service 名运行时从当前容器的 docker compose 标签自动发现，无需手动配置
-- 自动备份当前镜像到本地 `kiro-rs:rollback` tag，支持「回退到上一版本」一键还原
+- 一键从 GitHub Releases 下载新版本二进制（带 SHA256 校验），原子替换当前 `kiro-rs`，旧版本备份到 `<exe>.backup`
+- 替换完成后进程主动退出，由 `docker-compose.yml` 里的 `restart: unless-stopped` 接管重启，新二进制随之生效
+- 失败完全无副作用：网络断、校验不通过都不会动到正在运行的旧 `kiro-rs`
+- 「回退到上一版本」从 `<exe>.backup` 恢复并重启进程，断网也能用
 - 可开启「无人值守自动更新」：每天到指定时间检查并应用新版本
-- 自动检查 Docker Hub 新版本，发现新 tag 时在工具栏图标上显示红点提醒
+- 自动检查 Docker Hub tag 与 GitHub Releases，发现新版本时在工具栏图标上显示红点提醒
 
-容器部署时需要让容器能够访问宿主机 Docker daemon。默认 `docker-compose.yml` 已示例挂载：
+容器部署只需要把 `data/` 目录挂进容器，不再需要 docker socket 或 compose 文件透传：
 
 ```yaml
 volumes:
   - ./data/:/app/config/
-  - ./docker-compose.yml:/app/config/docker-compose.yml:ro
-  - /var/run/docker.sock:/var/run/docker.sock
 ```
 
-镜像和版本号都从 Docker Hub 取（`hub.docker.com/r/<owner>/kiro-rs`），项目 GitHub Actions 在每次发布时会自动推送到 Docker Hub。
+镜像和版本号都从 Docker Hub 取（`hub.docker.com/r/<owner>/kiro-rs`），项目 GitHub Actions 在每次发布时会自动推送到 Docker Hub 并发布对应平台二进制到 GitHub Releases。
 
 ## 发布流程
 

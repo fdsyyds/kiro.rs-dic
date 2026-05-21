@@ -2,7 +2,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Timelike, Utc};
@@ -299,233 +298,21 @@ fn is_semver_tag(value: &str) -> bool {
     !first.is_empty() && first.chars().all(|c| c.is_ascii_digit())
 }
 
-/// 当前构建类型。docker 镜像里通过 `apply_image_update` 调 compose 重建，
-/// 因此固定为 "docker-compose"；非容器场景的二进制升级路径暂未实现。
-const BUILD_TYPE: &str = "docker-compose";
+/// 当前构建类型。在线更新走"下载 GitHub Releases 二进制 + 进程退出由
+/// docker restart policy 接管重启"的方案。
+const BUILD_TYPE: &str = "binary";
+
+/// 暂存路径：下载到 `<exe>.staged`，原子替换前再 mv 到 `<exe>`。
+fn staged_binary_path(exe: &std::path::Path) -> std::path::PathBuf {
+    let mut s = exe.as_os_str().to_os_string();
+    s.push(".staged");
+    std::path::PathBuf::from(s)
+}
 
 /// GitHub Release 仓库名（owner/repo）。
 /// 镜像版本号从 Docker Hub 取，但 release notes / changelog 由 GitHub Release
 /// 维护，需要单独拉取。
 const GITHUB_RELEASES_REPO: &str = "ZyphrZero/kiro.rs";
-
-/// 容器名 / hostname：在线更新执行流程会用容器自身的 compose 标签来发现 compose 文件位置和 service 名。
-const SELF_CONTAINER_HOSTNAME_ENV: &str = "HOSTNAME";
-
-/// 默认的容器内 compose 文件挂载位置，由仓库 docker-compose.yml 直接挂载得到。
-const DEFAULT_IN_CONTAINER_COMPOSE_PATH: &str = "/app/config/docker-compose.yml";
-
-/// 用于回退的本地镜像 tag。每次成功更新前，都会把当前运行镜像打到这个 tag 上，
-/// 这样即使远端 latest 已被覆盖，本地仍保留一份可用的旧镜像。
-const ROLLBACK_IMAGE_TAG: &str = "kiro-rs:rollback";
-
-/// 通过 `docker inspect <hostname> --format <fmt>` 读取当前容器的某项元数据。
-fn inspect_self_container(format: &str) -> Result<String, AdminServiceError> {
-    let hostname = std::env::var(SELF_CONTAINER_HOSTNAME_ENV)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| {
-            AdminServiceError::InternalError(
-                "无法获取当前容器 hostname（HOSTNAME 环境变量为空）".to_string(),
-            )
-        })?;
-
-    let raw = run_command("docker", &["inspect", "--format", format, &hostname]).map_err(|e| {
-        AdminServiceError::InternalError(format!(
-            "通过 docker inspect 读取容器信息失败：{}。请确认容器内已安装 docker CLI 并挂载 /var/run/docker.sock。",
-            e
-        ))
-    })?;
-
-    Ok(raw.lines().next().unwrap_or("").trim().to_string())
-}
-
-/// 通过 docker CLI 读取当前容器的 compose 元数据（compose 文件路径 + service 名）。
-///
-/// 容器需要满足两个前置条件，才能在容器内自动完成在线更新：
-/// 1. 已挂载 `/var/run/docker.sock`，使 `docker` 命令能访问宿主机 daemon。
-/// 2. 容器是由 `docker compose` 启动的（compose 会自动在容器上写入
-///    `com.docker.compose.project.config_files` 与 `com.docker.compose.service` 标签）。
-///
-/// 返回的 compose 文件路径来源是宿主机视角；调用方需要再用
-/// [`resolve_in_container_compose_path`] 将其映射为容器内能读到的路径。
-fn detect_compose_metadata() -> Result<(String, String), AdminServiceError> {
-    let raw = inspect_self_container(
-        "{{index .Config.Labels \"com.docker.compose.project.config_files\"}}|{{index .Config.Labels \"com.docker.compose.service\"}}",
-    )?;
-
-    let mut parts = raw.splitn(2, '|');
-    let compose_file = parts.next().unwrap_or("").trim().to_string();
-    let service = parts.next().unwrap_or("").trim().to_string();
-
-    if service.is_empty() {
-        return Err(AdminServiceError::InternalError(
-            "当前容器缺少 docker compose service 标签，无法自动识别。请使用 `docker compose -f docker-compose.yml up -d` 启动容器后再尝试在线更新。".to_string(),
-        ));
-    }
-
-    Ok((compose_file, service))
-}
-
-/// 读取当前容器正在运行的镜像引用与镜像 ID。
-///
-/// 返回 (`image_ref`, `image_id`)。`image_ref` 是 `.Config.Image`，可能是 tag
-/// 或 sha256；`image_id` 是 `.Image`，固定为 sha256 摘要，备份打 tag 时用它。
-fn detect_running_image() -> Result<(String, String), AdminServiceError> {
-    let image_ref = inspect_self_container("{{.Config.Image}}")?;
-    let image_id = inspect_self_container("{{.Image}}")?;
-    if image_id.is_empty() {
-        return Err(AdminServiceError::InternalError(
-            "无法读取当前容器的镜像 ID".to_string(),
-        ));
-    }
-    Ok((image_ref, image_id))
-}
-
-/// 给镜像 ID 打 `kiro-rs:rollback` tag，作为回退镜像。
-fn tag_rollback_image(image_id: &str) -> Result<String, AdminServiceError> {
-    run_command("docker", &["tag", image_id, ROLLBACK_IMAGE_TAG])
-}
-
-/// 检查本地是否还存在 `kiro-rs:rollback` 镜像。
-fn rollback_image_present() -> bool {
-    run_command("docker", &["image", "inspect", ROLLBACK_IMAGE_TAG]).is_ok()
-}
-
-/// 一次更新流程中重复使用的 compose 上下文：宿主机 project dir、容器内 yml 路径、
-/// 服务名。聚合到一起避免每次都重新 detect。
-struct ComposeContext {
-    host_project_dir: String,
-    in_container_compose: String,
-    service: String,
-}
-
-impl ComposeContext {
-    fn detect() -> Result<Self, AdminServiceError> {
-        let (host_compose_file, service) = detect_compose_metadata()?;
-        let in_container_compose = resolve_in_container_compose_path(&host_compose_file)?;
-        ensure_compose_file_exists(&in_container_compose)?;
-        let host_project_dir = std::path::Path::new(&host_compose_file)
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .filter(|p| !p.is_empty())
-            .unwrap_or_else(|| ".".to_string());
-        Ok(Self {
-            host_project_dir,
-            in_container_compose,
-            service,
-        })
-    }
-
-    fn compose_up(&self, image: &str) -> Result<String, AdminServiceError> {
-        let env = [("KIRO_RS_IMAGE", image)];
-        run_command_with_env(
-            "docker",
-            &[
-                "compose",
-                "--project-directory",
-                self.host_project_dir.as_str(),
-                "-f",
-                self.in_container_compose.as_str(),
-                "up",
-                "-d",
-                self.service.as_str(),
-            ],
-            &env,
-        )
-    }
-}
-
-/// 把 docker compose 标签里的宿主机路径映射成容器内可读的路径。
-///
-/// 容器内运行 `docker compose -f <path>` 时，CLI 会在本地（容器内）解析 yml，
-/// 因此必须挂载好 yml 文件。仓库默认 docker-compose.yml 已经挂载到
-/// `/app/config/docker-compose.yml`，这里以该路径作为兜底。
-fn resolve_in_container_compose_path(host_path: &str) -> Result<String, AdminServiceError> {
-    let host_trim = host_path.trim();
-    if !host_trim.is_empty() && std::path::Path::new(host_trim).is_file() {
-        return Ok(host_trim.to_string());
-    }
-    if std::path::Path::new(DEFAULT_IN_CONTAINER_COMPOSE_PATH).is_file() {
-        return Ok(DEFAULT_IN_CONTAINER_COMPOSE_PATH.to_string());
-    }
-    Err(AdminServiceError::InternalError(format!(
-        "compose 文件在容器内不可读。docker compose 标签指向宿主机路径 {host_trim:?}，且默认挂载点 {DEFAULT_IN_CONTAINER_COMPOSE_PATH} 也不存在。请在 docker-compose.yml 中保留 `./docker-compose.yml:{DEFAULT_IN_CONTAINER_COMPOSE_PATH}:ro` 这条挂载，并确认宿主机当前目录下有 docker-compose.yml 文件。"
-    )))
-}
-
-/// 在执行 compose 前，确保 compose 文件实际存在且是普通文件。
-///
-/// 这里专门处理 Docker bind mount 的常见陷阱：当宿主机源文件不存在时，
-/// Docker 会把目标路径自动创建成空目录，导致 `docker compose -f <path>` 报
-/// `read <path>: is a directory`。提前给出可操作的提示比让命令失败更友好。
-fn ensure_compose_file_exists(path: &str) -> Result<(), AdminServiceError> {
-    let metadata = std::fs::metadata(path).map_err(|e| {
-        AdminServiceError::InternalError(format!(
-            "compose 文件 {} 不可访问: {}。请确认宿主机上该文件存在并已挂载到容器内的同一路径。",
-            path, e
-        ))
-    })?;
-    if metadata.is_dir() {
-        return Err(AdminServiceError::InternalError(format!(
-            "compose 文件 {} 实际是一个目录。常见原因是 docker-compose.yml 在宿主机上不存在，被 Docker 自动创建为空目录。请在宿主机上提供真实的 docker-compose.yml 后重新启动容器。",
-            path
-        )));
-    }
-    if !metadata.is_file() {
-        return Err(AdminServiceError::InternalError(format!(
-            "compose 文件 {} 不是普通文件，无法用于 docker compose -f",
-            path
-        )));
-    }
-    Ok(())
-}
-
-fn command_output_text(stdout: &[u8], stderr: &[u8]) -> String {
-    let mut out = String::new();
-    let stdout = String::from_utf8_lossy(stdout);
-    let stderr = String::from_utf8_lossy(stderr);
-    if !stdout.trim().is_empty() {
-        out.push_str(stdout.trim_end());
-        out.push('\n');
-    }
-    if !stderr.trim().is_empty() {
-        out.push_str(stderr.trim_end());
-        out.push('\n');
-    }
-    out
-}
-
-fn run_command_with_env(
-    program: &str,
-    args: &[&str],
-    envs: &[(&str, &str)],
-) -> Result<String, AdminServiceError> {
-    let mut command = Command::new(program);
-    command.args(args);
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-
-    let output = command
-        .output()
-        .map_err(|e| AdminServiceError::InternalError(format!("执行 {} 失败: {}", program, e)))?;
-    let text = command_output_text(&output.stdout, &output.stderr);
-    if !output.status.success() {
-        return Err(AdminServiceError::InternalError(format!(
-            "命令 {} {} 执行失败（{}）: {}",
-            program,
-            args.join(" "),
-            output.status,
-            text.trim()
-        )));
-    }
-    Ok(text)
-}
-
-fn run_command(program: &str, args: &[&str]) -> Result<String, AdminServiceError> {
-    run_command_with_env(program, args, &[])
-}
 
 impl AdminService {
     pub fn new(
@@ -904,7 +691,7 @@ impl AdminService {
                                     info.latest_version,
                                     info.current_version
                                 );
-                                match svc.apply_image_update() {
+                            match svc.apply_image_update().await {
                                     Ok(res) => {
                                         tracing::info!("自动更新完成：{}", res.message);
                                         last_applied_version = Some(info.latest_version);
@@ -1147,126 +934,123 @@ impl AdminService {
         Ok(self.get_update_config())
     }
 
-    /// 拉取配置中的镜像（公开镜像，直接 docker pull，无需登录）。
-    pub fn pull_update_image(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
-        let config = self.update_config.lock().clone();
-        let image = config.image.trim().to_string();
-        validate_image_ref(&image)?;
+    /// 下载新版二进制并通过校验和验证（对应前端「拉取镜像」按钮）。
+    /// 不替换当前可执行文件，便于用户在正式应用前先确认下载成功。
+    pub async fn pull_update_image(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
+        let image = self.update_config.lock().image.trim().to_string();
+        let proxy = self.token_manager.proxy().map(|p| p.url.clone());
+        let exe = super::binary_update::current_executable()?;
+        let staged = staged_binary_path(&exe);
 
-        let output = run_command("docker", &["pull", &image])?;
+        let version = self.resolve_target_version().await?;
+        super::binary_update::download_release_binary(&version, proxy.as_deref(), &staged).await?;
 
         Ok(ImageUpdateResponse {
             success: true,
-            message: "镜像拉取完成".to_string(),
+            message: format!("已下载并校验 v{} 二进制", version),
             image,
-            output: Some(output),
+            output: Some(format!(
+                "downloaded: v{}\nstaged: {}",
+                version,
+                staged.display()
+            )),
             applied: false,
             need_restart: false,
         })
     }
 
-    /// 拉取镜像并通过 docker compose 重建服务。
-    ///
-    /// 容器内调用时需要满足：
-    /// 1. 已挂载 `/var/run/docker.sock`（默认 docker-compose.yml 已挂载）。
-    /// 2. 容器是由 `docker compose` 启动的（compose 自带的标签会写入容器）。
-    /// 3. 容器在宿主机上的 compose 文件仍然存在于 compose 标签所记录的位置。
-    pub fn apply_image_update(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
+    /// 下载新版二进制并替换当前可执行文件，随后让进程退出由
+    /// `restart: unless-stopped` 接管重启（对应前端「更新并重启」按钮）。
+    pub async fn apply_image_update(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
         let image = self.update_config.lock().image.trim().to_string();
-        validate_image_ref(&image)?;
+        let proxy = self.token_manager.proxy().map(|p| p.url.clone());
+        let exe = super::binary_update::current_executable()?;
+        let staged = staged_binary_path(&exe);
 
-        let ctx = ComposeContext::detect()?;
+        let version = self.resolve_target_version().await?;
+        super::binary_update::download_release_binary(&version, proxy.as_deref(), &staged).await?;
 
-        let mut output = String::new();
+        // 记录当前版本作为「上一版本」，供前端展示「回退」按钮
+        let previous_version = env!("CARGO_PKG_VERSION").to_string();
+        super::binary_update::install_binary(&exe, &staged)?;
 
-        // 在 pull 新镜像之前，把当前正在运行的镜像打到 `kiro-rs:rollback` 这个
-        // 本地备份 tag 上。即使后续远端 latest 被覆盖、本地原始 tag 被新镜像
-        // 取代，备份镜像也仍然可用，可在断网情况下回退。
-        let previous_image_ref = match detect_running_image() {
-            Ok((image_ref, image_id)) => match tag_rollback_image(&image_id) {
-                Ok(tag_out) => {
-                    output.push_str(&tag_out);
-                    Some(image_ref)
-                }
-                Err(e) => {
-                    output.push_str(&format!("warning: 备份当前镜像失败: {}\n", e));
-                    None
-                }
-            },
-            Err(e) => {
-                output.push_str(&format!("warning: 读取当前镜像信息失败: {}\n", e));
-                None
-            }
-        };
+        let prev_label = format!("v{}", previous_version);
+        self.update_config.lock().previous_image = Some(prev_label.clone());
+        let prev_to_persist = prev_label.clone();
+        self.update_config_file(move |c| {
+            c.update_previous_image = Some(prev_to_persist);
+        });
 
-        output.push_str(&run_command("docker", &["pull", image.as_str()])?);
-        output.push_str(&ctx.compose_up(image.as_str())?);
-
-        // 仅当成功应用了新镜像后再持久化 previous_image，避免回退指向并未真正
-        // 切换到的版本。
-        if let Some(prev) = previous_image_ref.clone() {
-            self.update_config.lock().previous_image = Some(prev.clone());
-            self.update_config_file(move |c| {
-                c.update_previous_image = Some(prev);
-            });
-        }
+        super::binary_update::schedule_self_exit(std::time::Duration::from_secs(2));
 
         Ok(ImageUpdateResponse {
             success: true,
-            message: "镜像已更新并应用，容器将由 Docker Compose 重建".to_string(),
+            message: format!(
+                "已替换为 v{}，进程将在 2 秒后退出，由容器重启策略接管",
+                version
+            ),
             image,
-            output: Some(output),
+            output: Some(format!(
+                "previous: v{}\ninstalled: v{}",
+                previous_version, version
+            )),
             applied: true,
             need_restart: true,
         })
     }
 
-    /// 把容器回退到上一次更新前的镜像版本。
-    ///
-    /// 回退使用本地备份 tag `kiro-rs:rollback`，不会再访问镜像仓库，因此即使
-    /// 上游 latest 已经被覆盖、网络中断，也能恢复到旧版本。
-    pub fn rollback_image_update(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
+    /// 把可执行文件回退到 `<exe>.backup`，再重启进程。
+    pub async fn rollback_image_update(&self) -> Result<ImageUpdateResponse, AdminServiceError> {
         let runtime = self.update_config.lock().clone();
-        let previous_image = runtime
+        let previous_label = runtime
             .previous_image
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .ok_or_else(|| {
                 AdminServiceError::InvalidCredential(
-                    "尚未记录可回退的镜像版本，请先执行一次在线更新".to_string(),
+                    "尚未记录可回退的版本，请先执行一次在线更新".to_string(),
                 )
             })?
             .to_string();
 
-        if !rollback_image_present() {
-            return Err(AdminServiceError::InternalError(format!(
-                "本地未找到备份镜像 {}，可能已被 docker image prune 清理。无法离线回退。",
-                ROLLBACK_IMAGE_TAG
-            )));
-        }
+        let exe = super::binary_update::current_executable()?;
+        super::binary_update::restore_backup(&exe)?;
 
-        let ctx = ComposeContext::detect()?;
-
-        let mut output = String::new();
-        // 直接用本地备份 tag 跑 compose up，不再 pull。
-        output.push_str(&ctx.compose_up(ROLLBACK_IMAGE_TAG)?);
-
-        // 把当前镜像配置同步成回退后的版本，方便用户在 UI 上看清现状。
-        self.update_config.lock().image = previous_image.clone();
-        let to_persist = previous_image.clone();
-        self.update_config_file(move |c| {
-            c.update_image = to_persist;
+        // 清空 previous_image 避免连续回退指向不存在的版本
+        self.update_config.lock().previous_image = None;
+        self.update_config_file(|c| {
+            c.update_previous_image = None;
         });
+
+        super::binary_update::schedule_self_exit(std::time::Duration::from_secs(2));
 
         Ok(ImageUpdateResponse {
             success: true,
-            message: format!("已回退到镜像 {}", previous_image),
-            image: previous_image,
-            output: Some(output),
+            message: format!(
+                "已回退到 {}，进程将在 2 秒后退出，由容器重启策略接管",
+                previous_label
+            ),
+            image: runtime.image,
+            output: Some(format!("rolled back to: {}", previous_label)),
             applied: true,
             need_restart: true,
         })
+    }
+
+    /// 返回 GitHub Releases 上的最新可用版本号（无 `v` 前缀）。
+    /// 失败时返回 `InternalError`，调用方应直接返回给前端。
+    async fn resolve_target_version(&self) -> Result<String, AdminServiceError> {
+        let info = self.check_update(true).await;
+        if let Some(warn) = info.warning {
+            return Err(AdminServiceError::InternalError(warn));
+        }
+        if info.latest_version.is_empty() {
+            return Err(AdminServiceError::InternalError(
+                "无法解析最新版本号（GitHub Releases 返回空）".to_string(),
+            ));
+        }
+        Ok(info.latest_version)
     }
 
     /// 检查 GitHub Releases 上是否存在新版本。
