@@ -9,21 +9,21 @@ interface ProgressProps extends React.HTMLAttributes<HTMLDivElement> {
 const Progress = React.forwardRef<HTMLDivElement, ProgressProps>(
   ({ className, value = 0, max = 100, ...props }, ref) => {
     const percentage = Math.min(Math.max((value / max) * 100, 0), 100)
+    const tone =
+      percentage > 80
+        ? 'bg-gradient-to-r from-rose-500 to-red-500'
+        : percentage > 60
+        ? 'bg-gradient-to-r from-amber-400 to-orange-500'
+        : 'bg-gradient-to-r from-emerald-400 to-emerald-500'
 
     return (
       <div
         ref={ref}
-        className={cn(
-          'relative h-4 w-full overflow-hidden rounded-full bg-secondary',
-          className
-        )}
+        className={cn('relative h-1.5 w-full overflow-hidden rounded-full bg-secondary/80', className)}
         {...props}
       >
         <div
-          className={cn(
-            'h-full transition-all',
-            percentage > 80 ? 'bg-red-500' : percentage > 60 ? 'bg-yellow-500' : 'bg-green-500'
-          )}
+          className={cn('h-full transition-all duration-500 ease-apple rounded-full', tone)}
           style={{ width: `${percentage}%` }}
         />
       </div>

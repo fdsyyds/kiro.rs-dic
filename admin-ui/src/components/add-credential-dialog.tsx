@@ -123,7 +123,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                 value={authMethod}
                 onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
                 disabled={isPending}
-                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex h-10 w-full rounded-xl border border-input bg-background/60 px-3.5 py-2 text-sm transition-all duration-150 ease-apple placeholder:text-muted-foreground/70 hover:border-border focus-visible:outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <option value="social">Social</option>
                 <option value="idc">IdC/Builder-ID/IAM</option>

@@ -88,6 +88,38 @@ pub async fn get_credential_balance(
     }
 }
 
+/// POST /api/admin/credentials/disable-quota-exceeded
+/// 一键禁用所有"已超额"凭据（remaining ≤ 0 或 usage_percentage ≥ 100）
+pub async fn disable_quota_exceeded(State(state): State<AdminState>) -> impl IntoResponse {
+    let result = state.service.disable_quota_exceeded();
+    Json(result).into_response()
+}
+
+/// POST /api/admin/credentials/:id/overage
+/// 开启或关闭指定凭据的超额能力
+pub async fn set_credential_overage(
+    State(state): State<AdminState>,
+    Path(id): Path<u64>,
+    Json(payload): Json<super::types::SetOverageRequest>,
+) -> impl IntoResponse {
+    match state.service.set_overage(id, payload.enabled).await {
+        Ok(_) => Json(SuccessResponse::new(format!(
+            "凭据 #{} 已{}超额",
+            id,
+            if payload.enabled { "开启" } else { "关闭" }
+        )))
+        .into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/credentials/overage/enable-all
+/// 一键开启所有"可开启超额且当前未开启"凭据的超额（基于 balance_cache 判断）
+pub async fn enable_overage_all(State(state): State<AdminState>) -> impl IntoResponse {
+    let result = state.service.enable_overage_for_all_capable().await;
+    Json(result).into_response()
+}
+
 /// POST /api/admin/credentials
 /// 添加新凭据
 pub async fn add_credential(
@@ -514,4 +546,28 @@ pub async fn update_admin_key(
     state.service.persist_admin_key(&new_key);
 
     Json(SuccessResponse::new("Admin API Key 已更新")).into_response()
+}
+
+/// PUT /api/admin/config/api-key
+/// 修改业务 API Key 并持久化到配置文件
+///
+/// 内存中的认证 key 与 anthropic 路由共享，调用后 `/v1/*` 立刻使用新 key。
+pub async fn update_api_key(
+    State(state): State<AdminState>,
+    Json(payload): Json<UpdateAdminKeyRequest>,
+) -> impl IntoResponse {
+    use axum::http::StatusCode;
+    let new_key = payload.new_key.trim().to_string();
+    if new_key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(super::types::AdminErrorResponse::invalid_request(
+                "新 API Key 不能为空",
+            )),
+        )
+            .into_response();
+    }
+    *state.api_key.write() = new_key.clone();
+    state.service.persist_api_key(&new_key);
+    Json(SuccessResponse::new("API Key 已更新")).into_response()
 }

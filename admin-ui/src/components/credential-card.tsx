@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { RefreshCw, ChevronUp, ChevronDown, Trash2, Loader2, Pencil, LogIn } from 'lucide-react'
+import { RefreshCw, ChevronUp, ChevronDown, Trash2, Loader2, Pencil, LogIn, MoreHorizontal, RotateCcw, Zap, ZapOff } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -9,23 +9,21 @@ import { Input } from '@/components/ui/input'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Progress } from '@/components/ui/progress'
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu'
+import { SubscriptionBadge } from '@/components/subscription-badge'
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import type { CredentialStatusItem, BalanceResponse } from '@/types/api'
 import { maskProxyUrl, extractErrorMessage } from '@/lib/utils'
 import {
-  useSetDisabled,
-  useSetPriority,
-  useResetFailure,
-  useDeleteCredential,
-  useForceRefreshToken,
-  useResetSuccessCount,
+  useSetDisabled, useSetPriority, useResetFailure,
+  useDeleteCredential, useForceRefreshToken, useResetSuccessCount,
 } from '@/hooks/use-credentials'
+import { setCredentialOverage } from '@/api/credentials'
+import { useQueryClient } from '@tanstack/react-query'
 import { EditCredentialDialog } from '@/components/edit-credential-dialog'
 import { UpdateTokenDialog } from '@/components/update-token-dialog'
 import { ReloginDialog } from '@/components/relogin-dialog'
@@ -38,38 +36,106 @@ interface CredentialCardProps {
   loadingBalance: boolean
 }
 
-
 function formatLastUsed(lastUsedAt: string | null): string {
   if (!lastUsedAt) return '从未使用'
   const date = new Date(lastUsedAt)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
+  const diff = Date.now() - date.getTime()
   if (diff < 0) return '刚刚'
-  const seconds = Math.floor(diff / 1000)
-  if (seconds < 60) return `${seconds} 秒前`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟前`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  const days = Math.floor(hours / 24)
-  return `${days} 天前`
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s} 秒前`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} 分钟前`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} 小时前`
+  return `${Math.floor(h / 24)} 天前`
 }
 
-function formatNumber(num: number): string {
-  return num.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+function formatNumber(n: number): string {
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-function formatResetDate(timestamp: number | null): string {
-  if (!timestamp) return '未知'
-  return new Date(timestamp * 1000).toLocaleString('zh-CN')
+function formatResetDate(ts: number | null): string {
+  if (!ts) return '未知'
+  return new Date(ts * 1000).toLocaleString('zh-CN')
+}
+
+/**
+ * 紧凑超额状态胶囊 — 与订阅徽章并列展示，不占整行
+ * 三态：已开（绿色实色）/ 未开（中性细描边）/ 不支持（灰色虚边小字）
+ */
+function OverageStatusPill({ balance }: { balance: BalanceResponse }) {
+  const cap = balance.overageCapable
+  const on = balance.overageEnabled === true
+
+  // 不支持的订阅：极弱化
+  if (cap === false) return null
+
+  if (on) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 h-6 text-[11px] font-medium text-emerald-700 dark:text-emerald-400"
+        title="此账号已开启超额"
+      >
+        <Zap className="h-3 w-3" />超额
+      </span>
+    )
+  }
+
+  if (cap === true) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-transparent px-2 h-6 text-[11px] font-medium text-amber-600 dark:text-amber-400"
+        title="此账号支持超额但当前未开启"
+      >
+        <ZapOff className="h-3 w-3" />未开
+      </span>
+    )
+  }
+
+  // 未知：低调灰色，hover 看原始值
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full border border-dashed border-border/60 bg-transparent px-2 h-6 text-[11px] text-muted-foreground"
+      title={
+        balance.overageCapabilityRaw
+          ? `overageCapability = ${balance.overageCapabilityRaw}`
+          : '上游未返回 overageCapability'
+      }
+    >
+      <ZapOff className="h-3 w-3" />未知
+    </span>
+  )
+}
+
+/**
+ * 把后端返回的 disabledReason 字符串映射为更直观的中文徽标
+ * （颜色/文案/排序权重，越靠前越显眼）
+ */
+function getDisabledReasonStyle(reason?: string | null): {
+  label: string
+  variant: 'destructive' | 'warning' | 'outline' | 'secondary'
+} | null {
+  if (!reason) return null
+  switch (reason) {
+    case 'QuotaExceeded':
+      return { label: '已超额', variant: 'warning' }
+    case 'TooManyFailures':
+      return { label: '失败过多', variant: 'destructive' }
+    case 'TooManyRefreshFailures':
+      return { label: '刷新失败过多', variant: 'destructive' }
+    case 'InvalidRefreshToken':
+      return { label: 'Token 失效', variant: 'destructive' }
+    case 'InvalidConfig':
+      return { label: '配置无效', variant: 'destructive' }
+    case 'Manual':
+      return { label: '手动禁用', variant: 'secondary' }
+    default:
+      return { label: reason, variant: 'outline' }
+  }
 }
 
 export function CredentialCard({
-  credential,
-  selected,
-  onToggleSelect,
-  balance,
-  loadingBalance,
+  credential, selected, onToggleSelect, balance, loadingBalance,
 }: CredentialCardProps) {
   const [editingPriority, setEditingPriority] = useState(false)
   const [priorityValue, setPriorityValue] = useState(String(credential.priority))
@@ -84,73 +150,57 @@ export function CredentialCard({
   const deleteCredential = useDeleteCredential()
   const forceRefresh = useForceRefreshToken()
   const resetSuccess = useResetSuccessCount()
+  const queryClient = useQueryClient()
+  const [overageBusy, setOverageBusy] = useState(false)
+  const handleSetOverage = async (enabled: boolean) => {
+    setOverageBusy(true)
+    try {
+      await setCredentialOverage(credential.id, enabled)
+      toast.success(enabled ? '已开启超额' : '已关闭超额')
+      queryClient.invalidateQueries({ queryKey: ['credentials'] })
+    } catch (err) {
+      toast.error((enabled ? '开启' : '关闭') + '超额失败: ' + extractErrorMessage(err))
+    } finally {
+      setOverageBusy(false)
+    }
+  }
 
   const handleToggleDisabled = () => {
     setDisabled.mutate(
       { id: credential.id, disabled: !credential.disabled },
       {
-        onSuccess: (res) => {
-          toast.success(res.message)
-        },
-        onError: (err) => {
-          toast.error('操作失败: ' + (err as Error).message)
-        },
+        onSuccess: (res) => toast.success(res.message),
+        onError: (err) => toast.error('操作失败: ' + (err as Error).message),
       }
     )
   }
 
   const handlePriorityChange = () => {
-    const newPriority = parseInt(priorityValue, 10)
-    if (isNaN(newPriority) || newPriority < 0) {
-      toast.error('优先级必须是非负整数')
-      return
-    }
+    const np = parseInt(priorityValue, 10)
+    if (isNaN(np) || np < 0) { toast.error('优先级必须是非负整数'); return }
     setPriority.mutate(
-      { id: credential.id, priority: newPriority },
+      { id: credential.id, priority: np },
       {
-        onSuccess: (res) => {
-          toast.success(res.message)
-          setEditingPriority(false)
-        },
-        onError: (err) => {
-          toast.error('操作失败: ' + (err as Error).message)
-        },
+        onSuccess: (res) => { toast.success(res.message); setEditingPriority(false) },
+        onError: (err) => toast.error('操作失败: ' + (err as Error).message),
       }
     )
   }
 
-  const handleReset = () => {
-    resetFailure.mutate(credential.id, {
-      onSuccess: (res) => {
-        toast.success(res.message)
-      },
-      onError: (err) => {
-        toast.error('操作失败: ' + (err as Error).message)
-      },
-    })
-  }
+  const handleReset = () => resetFailure.mutate(credential.id, {
+    onSuccess: (res) => toast.success(res.message),
+    onError: (err) => toast.error('操作失败: ' + (err as Error).message),
+  })
 
-  const handleForceRefresh = () => {
-    forceRefresh.mutate(credential.id, {
-      onSuccess: (res) => {
-        toast.success(res.message)
-      },
-      onError: (err) => {
-        toast.error('刷新失败: ' + extractErrorMessage(err))
-      },
-    })
-  }
+  const handleForceRefresh = () => forceRefresh.mutate(credential.id, {
+    onSuccess: (res) => toast.success(res.message),
+    onError: (err) => toast.error('刷新失败: ' + extractErrorMessage(err)),
+  })
 
-  const handleResetSuccess = () => {
-    resetSuccess.mutate(credential.id, {
-      onSuccess: (res) => {
-        toast.success(res.message)
-      },
-      onError: (err) => {
-        toast.error('重置失败: ' + (err as Error).message)
-      },
-    })
-  }
+  const handleResetSuccess = () => resetSuccess.mutate(credential.id, {
+    onSuccess: (res) => toast.success(res.message),
+    onError: (err) => toast.error('重置失败: ' + (err as Error).message),
+  })
 
   const handleDelete = () => {
     if (!credential.disabled) {
@@ -158,313 +208,320 @@ export function CredentialCard({
       setShowDeleteDialog(false)
       return
     }
-
     deleteCredential.mutate(credential.id, {
-      onSuccess: (res) => {
-        toast.success(res.message)
-        setShowDeleteDialog(false)
-      },
-      onError: (err) => {
-        toast.error('删除失败: ' + (err as Error).message)
-      },
+      onSuccess: (res) => { toast.success(res.message); setShowDeleteDialog(false) },
+      onError: (err) => toast.error('删除失败: ' + (err as Error).message),
     })
   }
 
+  const authLabel = credential.authMethod === 'api_key' ? 'API Key'
+    : credential.authMethod === 'idc' ? 'IdC'
+    : credential.authMethod === 'social' ? 'Social'
+    : credential.authMethod
+
+  const isQuotaExceeded = balance
+    ? balance.remaining <= 0 || balance.usagePercentage >= 100
+    : false
+
+  const disabledByQuota = credential.disabled && credential.disabledReason === 'QuotaExceeded'
+  const reasonStyle = getDisabledReasonStyle(credential.disabledReason)
+
   return (
     <>
-      <Card className={credential.isCurrent ? 'ring-2 ring-primary' : ''}>
-        <CardHeader className="pb-2">
-          <div className="flex items-start gap-2">
+      <Card
+        className={`group hover:-translate-y-0.5 hover:shadow-apple-lg ${
+          credential.isCurrent ? 'ring-2 ring-primary/60 shadow-apple-lg' : ''
+        } ${
+          // 未禁用但已超额：琥珀色提醒边
+          !credential.disabled && isQuotaExceeded ? 'ring-1 ring-amber-500/60' : ''
+        } ${
+          // 已因超额被禁用：琥珀色实色边 + 不灰化（保留可读性，方便审视）
+          disabledByQuota ? 'ring-1 ring-amber-500/70 bg-amber-50/40 dark:bg-amber-500/[0.04]' : ''
+        } ${
+          // 其他原因被禁用：常规灰化
+          credential.disabled && !disabledByQuota ? 'opacity-70' : ''
+        }`}
+      >
+        <CardHeader className="pb-3">
+          <div className="flex items-start gap-3">
             <Checkbox
               className="mt-1 flex-shrink-0"
               checked={selected}
               onCheckedChange={onToggleSelect}
             />
             <div className="flex-1 min-w-0">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <CardTitle className="text-lg leading-tight">
-                  {credential.email || `凭据 #${credential.id}`}
-                </CardTitle>
-                {credential.isCurrent && (
-                  <Badge variant="success">当前</Badge>
+              <CardTitle className="truncate text-[15px]">
+                {credential.email || `凭据 #${credential.id}`}
+              </CardTitle>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                {balance?.subscriptionTitle && (
+                  <SubscriptionBadge title={balance.subscriptionTitle} />
                 )}
-                {credential.disabled && (
-                  <Badge variant="destructive">已禁用</Badge>
+                {credential.isCurrent && <Badge variant="success">活跃</Badge>}
+                {/* 禁用状态：合并 "已禁用" + 中文化的原因，单个 Badge 更醒目 */}
+                {credential.disabled && reasonStyle && (
+                  <Badge variant={reasonStyle.variant}>已禁用 · {reasonStyle.label}</Badge>
                 )}
-                {credential.disabled && credential.disabledReason && (
-                  <Badge variant="outline">{credential.disabledReason}</Badge>
+                {credential.disabled && !reasonStyle && <Badge variant="destructive">已禁用</Badge>}
+                {/* 仍启用但已经达到上限：黄色"已超额"徽章 */}
+                {!credential.disabled && isQuotaExceeded && (
+                  <Badge variant="warning">已超额</Badge>
                 )}
-                {credential.authMethod && (
-                  <Badge variant="secondary">
-                    {credential.authMethod === 'api_key' ? 'API Key' :
-                     credential.authMethod === 'idc' ? 'IdC' :
-                     credential.authMethod === 'social' ? 'Social' :
-                     credential.authMethod}
-                  </Badge>
-                )}
-                {credential.endpoint && (
-                  <Badge variant="outline">{credential.endpoint}</Badge>
-                )}
+                {credential.authMethod && <Badge variant="secondary">{authLabel}</Badge>}
+                {credential.endpoint && <Badge variant="outline">{credential.endpoint}</Badge>}
+                {credential.hasProfileArn && <Badge variant="outline">Profile ARN</Badge>}
               </div>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <span className="text-sm text-muted-foreground">启用</span>
-              <Switch
-                checked={!credential.disabled}
-                onCheckedChange={handleToggleDisabled}
-                disabled={setDisabled.isPending}
-              />
-            </div>
+            <Switch
+              checked={!credential.disabled}
+              onCheckedChange={handleToggleDisabled}
+              disabled={setDisabled.isPending}
+              title={credential.disabled ? '启用' : '禁用'}
+            />
           </div>
         </CardHeader>
+
         <CardContent className="space-y-4">
-          {/* 信息网格 */}
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <span className="text-muted-foreground">优先级：</span>
-              {editingPriority ? (
-                <div className="inline-flex items-center gap-1 ml-1">
-                  <Input
-                    type="number"
-                    value={priorityValue}
-                    onChange={(e) => setPriorityValue(e.target.value)}
-                    className="w-16 h-7 text-sm"
-                    min="0"
-                  />
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 w-7 p-0"
-                    onClick={handlePriorityChange}
-                    disabled={setPriority.isPending}
+          {/* 信息行 */}
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px]">
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-muted-foreground">优先级</dt>
+              <dd>
+                {editingPriority ? (
+                  <div className="inline-flex items-center gap-1">
+                    <Input
+                      type="number"
+                      value={priorityValue}
+                      onChange={(e) => setPriorityValue(e.target.value)}
+                      className="w-16 h-7 text-sm rounded-md"
+                      min="0"
+                    />
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={handlePriorityChange} disabled={setPriority.isPending}>✓</Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => { setEditingPriority(false); setPriorityValue(String(credential.priority)) }}>✕</Button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="font-medium tabular-nums hover:text-primary transition-colors"
+                    onClick={() => setEditingPriority(true)}
+                    title="点击编辑"
                   >
-                    ✓
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 w-7 p-0"
-                    onClick={() => {
-                      setEditingPriority(false)
-                      setPriorityValue(String(credential.priority))
-                    }}
-                  >
-                    ✕
-                  </Button>
-                </div>
-              ) : (
-                <span
-                  className="font-medium cursor-pointer hover:underline ml-1"
-                  onClick={() => setEditingPriority(true)}
-                >
-                  {credential.priority}
-                  <span className="text-xs text-muted-foreground ml-1">(点击编辑)</span>
-                </span>
-              )}
+                    {credential.priority}
+                  </button>
+                )}
+              </dd>
             </div>
-            <div>
-              <span className="text-muted-foreground">失败次数：</span>
-              <span className={credential.failureCount > 0 ? 'text-red-500 font-medium' : ''}>
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-muted-foreground">失败次数</dt>
+              <dd className={`tabular-nums font-medium ${credential.failureCount > 0 ? 'text-destructive' : ''}`}>
                 {credential.failureCount}
-              </span>
+              </dd>
             </div>
-            <div>
-              <span className="text-muted-foreground">刷新失败：</span>
-              <span className={credential.refreshFailureCount > 0 ? 'text-red-500 font-medium' : ''}>
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-muted-foreground">刷新失败</dt>
+              <dd className={`tabular-nums font-medium ${credential.refreshFailureCount > 0 ? 'text-destructive' : ''}`}>
                 {credential.refreshFailureCount}
-              </span>
+              </dd>
             </div>
-            <div className="col-span-2">
-              <span className="text-muted-foreground">订阅等级：</span>
-              <span className="font-medium">
-                {loadingBalance ? (
-                  <Loader2 className="inline w-3 h-3 animate-spin" />
-                ) : balance?.subscriptionTitle || '未知'}
-              </span>
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-muted-foreground">成功次数</dt>
+              <dd>
+                <button
+                  type="button"
+                  onClick={handleResetSuccess}
+                  className="tabular-nums font-medium hover:text-primary transition-colors"
+                  title="点击重置"
+                >
+                  {credential.successCount}
+                </button>
+              </dd>
             </div>
-            <div>
-              <span className="text-muted-foreground">成功次数：</span>
-              <span
-                className="font-medium cursor-pointer hover:underline"
-                onClick={handleResetSuccess}
-                title="点击重置成功次数"
-              >
-                {credential.successCount}
-                <span className="text-xs text-muted-foreground ml-1">(点击重置)</span>
-              </span>
-            </div>
-            <div className="col-span-2">
-              <span className="text-muted-foreground">最后调用：</span>
-              <span className="font-medium">{formatLastUsed(credential.lastUsedAt)}</span>
+            <div className="col-span-2 flex items-center justify-between gap-2 border-t border-border/50 pt-2">
+              <dt className="text-muted-foreground">最后调用</dt>
+              <dd className="font-medium">{formatLastUsed(credential.lastUsedAt)}</dd>
             </div>
             {credential.maskedApiKey && (
-              <div className="col-span-2">
-                <span className="text-muted-foreground">API Key：</span>
-                <span className="font-mono font-medium">{credential.maskedApiKey}</span>
+              <div className="col-span-2 flex items-center justify-between gap-2">
+                <dt className="text-muted-foreground">API Key</dt>
+                <dd className="font-mono text-xs truncate">{credential.maskedApiKey}</dd>
               </div>
             )}
             {credential.hasProxy && (
-              <div className="col-span-2">
-                <span className="text-muted-foreground">代理：</span>
-                <span className="font-medium font-mono text-xs">{maskProxyUrl(credential.proxyUrl ?? '')}</span>
+              <div className="col-span-2 flex items-center justify-between gap-2">
+                <dt className="text-muted-foreground">代理</dt>
+                <dd className="font-mono text-xs truncate">{maskProxyUrl(credential.proxyUrl ?? '')}</dd>
               </div>
             )}
-            {credential.hasProfileArn && (
-              <div className="col-span-2">
-                <Badge variant="secondary">有 Profile ARN</Badge>
-              </div>
-            )}
-          </div>
+          </dl>
 
-          {/* 余额信息 */}
-          <div className="rounded-md border bg-muted/20 p-3">
+          {/* 余额面板 */}
+          <div
+            className={`rounded-xl border p-4 transition-colors ${
+              isQuotaExceeded || disabledByQuota
+                ? 'border-amber-500/40 bg-amber-50/60 dark:bg-amber-500/[0.06]'
+                : 'border-border/60 bg-secondary/40'
+            }`}
+          >
             {loadingBalance ? (
-              <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                正在查询余额...
+              <div className="flex items-center justify-center gap-2 py-3 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />正在查询余额…
               </div>
             ) : balance ? (
               <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex items-end justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-xs text-muted-foreground">余额</div>
-                    <div className="text-base font-semibold text-green-600">
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground">余额</div>
+                    <div
+                      className={`mt-0.5 text-xl font-semibold tabular-nums ${
+                        balance.remaining <= 0
+                          ? 'text-amber-600 dark:text-amber-400'
+                          : 'text-emerald-600 dark:text-emerald-400'
+                      }`}
+                    >
                       ${formatNumber(balance.remaining)}
                     </div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-xs text-muted-foreground">订阅</div>
-                    <div className="text-sm font-medium">
-                      {balance.subscriptionTitle || '未知'}
+                  <div className="text-right min-w-0">
+                    <div className="text-[11px] uppercase tracking-wider text-muted-foreground">超额</div>
+                    <div className="mt-1 flex items-center justify-end">
+                      <OverageStatusPill balance={balance} />
                     </div>
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs text-muted-foreground">
+                  <Progress value={balance.usagePercentage} />
+                  <div className="flex justify-between text-[11px] tabular-nums text-muted-foreground">
                     <span>已用 ${formatNumber(balance.currentUsage)}</span>
+                    <span>{balance.usagePercentage.toFixed(1)}%</span>
                     <span>额度 ${formatNumber(balance.usageLimit)}</span>
                   </div>
-                  <Progress value={balance.usagePercentage} className="h-2" />
-                  <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>{balance.usagePercentage.toFixed(1)}% 已使用</span>
-                    <span>{(100 - balance.usagePercentage).toFixed(1)}% 剩余</span>
-                  </div>
                 </div>
-                <div className="border-t pt-2 text-xs text-muted-foreground">
+                <div className="border-t border-border/50 pt-2 text-[11px] text-muted-foreground">
                   下次重置：<span className="font-medium text-foreground">{formatResetDate(balance.nextResetAt)}</span>
                 </div>
               </div>
             ) : (
-              <div className="py-3 text-sm text-muted-foreground">
-                余额未查询。点击顶部“查询信息”后会直接显示在卡片中。
+              <div className="py-2 text-[13px] text-muted-foreground">
+                余额未查询，点击顶部"查询当前页信息"即可加载。
               </div>
             )}
           </div>
 
-          {/* 操作按钮 */}
-          <div className="flex flex-wrap gap-2 pt-2 border-t">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleReset}
-              disabled={resetFailure.isPending || (credential.failureCount === 0 && credential.refreshFailureCount === 0)}
-            >
-              <RefreshCw className="h-4 w-4 mr-1" />
-              重置失败
-            </Button>
-            {credential.authMethod !== 'api_key' && (
+          {/* 操作区 */}
+          <div className="flex items-center justify-between gap-2 border-t border-border/50 pt-3">
+            <div className="flex items-center gap-1">
               <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setShowReloginDialog(true)}
-                title="选择登录方式重新获取 Token 并刷新该凭据"
-              >
-                <LogIn className="h-4 w-4 mr-1" />
-                重新登录
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleForceRefresh}
-              disabled={forceRefresh.isPending || credential.disabled || credential.authMethod === 'api_key'}
-              title={credential.authMethod === 'api_key' ? 'API Key 凭据无需刷新 Token' : credential.disabled ? '已禁用的凭据无法刷新 Token' : '强制刷新 Token'}
-            >
-              <RefreshCw className={`h-4 w-4 mr-1 ${forceRefresh.isPending ? 'animate-spin' : ''}`} />
-              刷新 Token
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                const newPriority = Math.max(0, credential.priority - 1)
-                setPriority.mutate(
-                  { id: credential.id, priority: newPriority },
-                  {
+                size="icon"
+                variant="ghost"
+                onClick={() => {
+                  const np = Math.max(0, credential.priority - 1)
+                  setPriority.mutate({ id: credential.id, priority: np }, {
                     onSuccess: (res) => toast.success(res.message),
                     onError: (err) => toast.error('操作失败: ' + (err as Error).message),
-                  }
-                )
-              }}
-              disabled={setPriority.isPending || credential.priority === 0}
-            >
-              <ChevronUp className="h-4 w-4 mr-1" />
-              提高优先级
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                const newPriority = credential.priority + 1
-                setPriority.mutate(
-                  { id: credential.id, priority: newPriority },
-                  {
+                  })
+                }}
+                disabled={setPriority.isPending || credential.priority === 0}
+                title="提高优先级"
+              >
+                <ChevronUp className="h-4 w-4" />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => {
+                  const np = credential.priority + 1
+                  setPriority.mutate({ id: credential.id, priority: np }, {
                     onSuccess: (res) => toast.success(res.message),
                     onError: (err) => toast.error('操作失败: ' + (err as Error).message),
-                  }
-                )
-              }}
-              disabled={setPriority.isPending}
-            >
-              <ChevronDown className="h-4 w-4 mr-1" />
-              降低优先级
-            </Button>
-            {credential.authMethod !== 'api_key' && (
+                  })
+                }}
+                disabled={setPriority.isPending}
+                title="降低优先级"
+              >
+                <ChevronDown className="h-4 w-4" />
+              </Button>
+              <span className="mx-1 h-5 w-px bg-border/70" />
               <Button
                 size="sm"
-                variant="outline"
-                onClick={() => setShowUpdateTokenDialog(true)}
-                title="手动粘贴新 Token 并更新凭据"
+                variant="ghost"
+                onClick={handleForceRefresh}
+                disabled={forceRefresh.isPending || credential.disabled || credential.authMethod === 'api_key'}
+                title={credential.authMethod === 'api_key' ? 'API Key 无需刷新' : credential.disabled ? '已禁用' : '强制刷新 Token'}
               >
-                <RefreshCw className="h-4 w-4 mr-1" />
-                重新导入
+                <RefreshCw className={`h-3.5 w-3.5 ${forceRefresh.isPending ? 'animate-spin' : ''}`} />
+                刷新 Token
               </Button>
-            )}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setShowEditDialog(true)}
-            >
-              <Pencil className="h-4 w-4 mr-1" />
-              编辑
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={() => setShowDeleteDialog(true)}
-              disabled={!credential.disabled}
-              title={!credential.disabled ? '需要先禁用凭据才能删除' : undefined}
-            >
-              <Trash2 className="h-4 w-4 mr-1" />
-              删除
-            </Button>
+            </div>
+
+            <div className="flex items-center gap-1">
+              <Button size="sm" variant="outline" onClick={() => setShowEditDialog(true)}>
+                <Pencil className="h-3.5 w-3.5" />编辑
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon" variant="ghost" title="更多操作">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onSelect={(e) => { e.preventDefault(); handleReset() }}
+                    disabled={resetFailure.isPending || (credential.failureCount === 0 && credential.refreshFailureCount === 0)}
+                  >
+                    <RotateCcw />重置失败计数
+                  </DropdownMenuItem>
+                  {balance?.overageCapable === true && (
+                    balance.overageEnabled ? (
+                      <DropdownMenuItem
+                        onSelect={(e) => { e.preventDefault(); handleSetOverage(false) }}
+                        disabled={overageBusy}
+                      >
+                        <ZapOff />关闭超额
+                      </DropdownMenuItem>
+                    ) : (
+                      <DropdownMenuItem
+                        onSelect={(e) => { e.preventDefault(); handleSetOverage(true) }}
+                        disabled={overageBusy}
+                      >
+                        <Zap className="text-emerald-500" />开启超额
+                      </DropdownMenuItem>
+                    )
+                  )}
+                  {credential.authMethod !== 'api_key' && <DropdownMenuSeparator />}
+                  {credential.authMethod !== 'api_key' && (
+                    <DropdownMenuItem onSelect={() => setShowReloginDialog(true)}>
+                      <LogIn />重新登录
+                    </DropdownMenuItem>
+                  )}
+                  {credential.authMethod !== 'api_key' && (
+                    <DropdownMenuItem onSelect={() => setShowUpdateTokenDialog(true)}>
+                      <RefreshCw />重新导入 Token
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    destructive
+                    disabled={!credential.disabled}
+                    onSelect={(e) => {
+                      e.preventDefault()
+                      if (!credential.disabled) {
+                        toast.error('请先禁用凭据再删除')
+                        return
+                      }
+                      setShowDeleteDialog(true)
+                    }}
+                  >
+                    <Trash2 />删除凭据
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* 删除确认对话框 */}
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-sm">
           <DialogHeader>
             <DialogTitle>确认删除凭据</DialogTitle>
             <DialogDescription>
@@ -472,44 +529,19 @@ export function CredentialCard({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setShowDeleteDialog(false)}
-              disabled={deleteCredential.isPending}
-            >
+            <Button variant="outline" onClick={() => setShowDeleteDialog(false)} disabled={deleteCredential.isPending}>
               取消
             </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={deleteCredential.isPending || !credential.disabled}
-            >
+            <Button variant="destructive" onClick={handleDelete} disabled={deleteCredential.isPending || !credential.disabled}>
               确认删除
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* 编辑凭据对话框 */}
-      <EditCredentialDialog
-        open={showEditDialog}
-        onOpenChange={setShowEditDialog}
-        credential={credential}
-      />
-
-      {/* 更新 refreshToken 对话框 */}
-      <UpdateTokenDialog
-        open={showUpdateTokenDialog}
-        onOpenChange={setShowUpdateTokenDialog}
-        credential={credential}
-      />
-
-      {/* 重新登录对话框 */}
-      <ReloginDialog
-        open={showReloginDialog}
-        onOpenChange={setShowReloginDialog}
-        credential={credential}
-      />
+      <EditCredentialDialog open={showEditDialog} onOpenChange={setShowEditDialog} credential={credential} />
+      <UpdateTokenDialog open={showUpdateTokenDialog} onOpenChange={setShowUpdateTokenDialog} credential={credential} />
+      <ReloginDialog open={showReloginDialog} onOpenChange={setShowReloginDialog} credential={credential} />
     </>
   )
 }

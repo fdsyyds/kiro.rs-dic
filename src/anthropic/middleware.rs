@@ -9,6 +9,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Json, Response},
 };
+use parking_lot::RwLock;
 
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
@@ -18,8 +19,8 @@ use super::types::ErrorResponse;
 /// 应用共享状态
 #[derive(Clone)]
 pub struct AppState {
-    /// API 密钥
-    pub api_key: String,
+    /// API 密钥（运行时可修改，与 Admin 持久化共享）
+    pub api_key: Arc<RwLock<String>>,
     /// Kiro Provider（可选，用于实际 API 调用）
     /// 内部使用 MultiTokenManager，已支持线程安全的多凭据管理
     pub kiro_provider: Option<Arc<KiroProvider>>,
@@ -31,7 +32,16 @@ impl AppState {
     /// 创建新的应用状态
     pub fn new(api_key: impl Into<String>, extract_thinking: bool) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: Arc::new(RwLock::new(api_key.into())),
+            kiro_provider: None,
+            extract_thinking,
+        }
+    }
+
+    /// 使用现有 Arc 共享 api_key（用于与 Admin 模块共享同一份内存）
+    pub fn with_shared_api_key(api_key: Arc<RwLock<String>>, extract_thinking: bool) -> Self {
+        Self {
+            api_key,
             kiro_provider: None,
             extract_thinking,
         }
@@ -50,8 +60,9 @@ pub async fn auth_middleware(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    let current = state.api_key.read().clone();
     match auth::extract_api_key(&request) {
-        Some(key) if auth::constant_time_eq(&key, &state.api_key) => next.run(request).await,
+        Some(key) if auth::constant_time_eq(&key, &current) => next.run(request).await,
         _ => {
             let error = ErrorResponse::authentication_error();
             (StatusCode::UNAUTHORIZED, Json(error)).into_response()

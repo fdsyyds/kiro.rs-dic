@@ -9,14 +9,15 @@ use super::{
     handlers::{
         add_credential, add_proxy, apply_image_update, assign_proxy_to_credential,
         batch_add_proxies, complete_social_login, complete_social_relogin, delete_credential,
-        delete_proxy, force_refresh_token, get_all_credentials, get_credential_balance,
-        get_global_proxy, get_load_balancing_mode, get_proxy_pool, get_update_config,
-        poll_idc_login, poll_idc_relogin, poll_social_login, poll_social_relogin,
-        pull_update_image, reset_all_success_count, reset_failure_count, reset_success_count,
-        set_credential_disabled, set_credential_priority, set_global_proxy,
-        set_load_balancing_mode, set_proxy_enabled, set_update_config, start_idc_login,
-        start_idc_relogin, start_social_login, start_social_relogin, update_admin_key,
-        update_credential, update_refresh_token,
+        delete_proxy, disable_quota_exceeded, enable_overage_all, force_refresh_token,
+        get_all_credentials, get_credential_balance, get_global_proxy, get_load_balancing_mode,
+        get_proxy_pool, get_update_config, poll_idc_login, poll_idc_relogin, poll_social_login,
+        poll_social_relogin, pull_update_image, reset_all_success_count, reset_failure_count,
+        reset_success_count, set_credential_disabled, set_credential_overage,
+        set_credential_priority, set_global_proxy, set_load_balancing_mode, set_proxy_enabled,
+        set_update_config, start_idc_login, start_idc_relogin, start_social_login,
+        start_social_relogin, update_admin_key, update_api_key, update_credential,
+        update_refresh_token,
     },
     middleware::{AdminState, admin_auth_middleware},
 };
@@ -56,6 +57,15 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/credentials/{id}/reset", post(reset_failure_count))
         .route("/credentials/{id}/reset-stats", post(reset_success_count))
         .route("/credentials/reset-stats", post(reset_all_success_count))
+        .route(
+            "/credentials/disable-quota-exceeded",
+            post(disable_quota_exceeded),
+        )
+        .route(
+            "/credentials/overage/enable-all",
+            post(enable_overage_all),
+        )
+        .route("/credentials/{id}/overage", post(set_credential_overage))
         .route("/credentials/{id}/refresh", post(force_refresh_token))
         .route("/credentials/{id}/refresh-token", put(update_refresh_token))
         .route("/credentials/{id}/balance", get(get_credential_balance))
@@ -77,6 +87,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
             get(get_update_config).put(set_update_config),
         )
         .route("/config/admin-key", put(update_admin_key))
+        .route("/config/api-key", put(update_api_key))
         .route("/system/update/pull", post(pull_update_image))
         .route("/system/update/apply", post(apply_image_update))
         .route("/auth/idc/start", post(start_idc_login))

@@ -208,3 +208,26 @@ function sha256Pure(data: Uint8Array): string {
     .map(v => (v >>> 0).toString(16).padStart(8, '0'))
     .join('')
 }
+
+/**
+ * 生成一个加密强度的随机 API Key
+ *
+ * 默认 40 字节熵，前缀 "sk-kiro-"，剩余部分使用 Base64URL 编码（字母/数字/-/_）。
+ * 优先使用 `crypto.getRandomValues`，缺失时回退到 `Math.random` 并打印告警。
+ */
+export function generateApiKey(prefix: string = 'sk-kiro-', byteLen: number = 40): string {
+  const bytes = new Uint8Array(byteLen)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes)
+  } else {
+    // Fallback：弱熵，仅用于极端环境
+    console.warn('[generateApiKey] crypto.getRandomValues 不可用，回退到 Math.random')
+    for (let i = 0; i < byteLen; i++) bytes[i] = Math.floor(Math.random() * 256)
+  }
+  // Base64 → Base64URL（去除填充与 +、/）
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  const b64 = btoa(bin)
+  const urlSafe = b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return prefix + urlSafe
+}

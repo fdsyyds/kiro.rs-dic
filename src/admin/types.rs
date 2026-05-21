@@ -62,6 +62,12 @@ pub struct CredentialStatusItem {
     pub disabled_reason: Option<String>,
     /// 端点名称（决定该凭据走哪套 Kiro API，已回退到默认端点）
     pub endpoint: String,
+    /// 凭据余额（从缓存中读取的最近一次结果，可能为 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<BalanceResponse>,
+    /// 余额缓存的更新时间（Unix 秒，仅在 balance 有值时返回）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance_updated_at: Option<f64>,
 }
 
 // ============ 操作请求 ============
@@ -220,6 +226,49 @@ pub struct BalanceResponse {
     pub usage_percentage: f64,
     /// 下次重置时间（Unix 时间戳）
     pub next_reset_at: Option<f64>,
+    /// 用户当前是否开启了超额
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage_enabled: Option<bool>,
+    /// 账号是否能开启超额（FREE 等订阅通常为 false）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage_capable: Option<bool>,
+    /// 上游 `overageCapability` 原始字符串（用于排查"未知"状态）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overage_capability_raw: Option<String>,
+}
+
+// ============ 一键超额 ============
+
+/// 一键超额禁用结果
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuotaExceededResult {
+    /// 已被禁用的凭据 ID 列表
+    pub disabled_ids: Vec<u64>,
+    /// 跳过的凭据 ID 列表（如禁用失败、缓存缺失等）
+    pub skipped_ids: Vec<u64>,
+}
+
+/// 设置单个凭据的超额开关
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetOverageRequest {
+    /// true 开启超额；false 关闭
+    pub enabled: bool,
+}
+
+/// 一键开启超额结果
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnableOverageAllResult {
+    /// 成功开启的凭据 ID 列表
+    pub enabled_ids: Vec<u64>,
+    /// 跳过（不可开启 / 已开启 / 缓存缺失）
+    pub skipped_ids: Vec<u64>,
+    /// 调用失败的凭据 ID 列表
+    pub failed_ids: Vec<u64>,
+    /// 失败原因（与 failed_ids 一一对应）
+    pub failure_messages: Vec<String>,
 }
 
 // ============ 负载均衡配置 ============

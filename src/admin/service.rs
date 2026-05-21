@@ -22,11 +22,12 @@ use super::error::AdminServiceError;
 use super::proxy_pool::{GetUrlResult, ProxyPoolManager};
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, AssignProxyRequest, BalanceResponse,
-    BatchAddProxyRequest, CredentialStatusItem, CredentialsStatusResponse, ImageUpdateResponse,
-    LoadBalancingModeResponse, PollIdcLoginResponse, ProxyPoolEntry, ProxyPoolResponse,
-    SetLoadBalancingModeRequest, SetUpdateConfigRequest, StartIdcLoginRequest,
-    StartIdcLoginResponse, StartSocialLoginRequest, StartSocialLoginResponse, UpdateConfigResponse,
-    UpdateCredentialRequest, UpdateRefreshTokenRequest,
+    BatchAddProxyRequest, CredentialStatusItem, CredentialsStatusResponse,
+    EnableOverageAllResult, ImageUpdateResponse, LoadBalancingModeResponse, PollIdcLoginResponse,
+    ProxyPoolEntry, ProxyPoolResponse, QuotaExceededResult, SetLoadBalancingModeRequest,
+    SetUpdateConfigRequest, StartIdcLoginRequest, StartIdcLoginResponse, StartSocialLoginRequest,
+    StartSocialLoginResponse, UpdateConfigResponse, UpdateCredentialRequest,
+    UpdateRefreshTokenRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -315,29 +316,46 @@ impl AdminService {
         let snapshot = self.token_manager.snapshot();
         let default_endpoint = self.token_manager.config().default_endpoint.clone();
 
+        // 一次性快照余额缓存，避免 N 次加锁
+        let balance_snapshot: HashMap<u64, CachedBalance> = {
+            let cache = self.balance_cache.lock();
+            cache.clone()
+        };
+        let now_ts = Utc::now().timestamp() as f64;
+
         let mut credentials: Vec<CredentialStatusItem> = snapshot
             .entries
             .into_iter()
-            .map(|entry| CredentialStatusItem {
-                id: entry.id,
-                priority: entry.priority,
-                disabled: entry.disabled,
-                failure_count: entry.failure_count,
-                is_current: entry.id == snapshot.current_id,
-                expires_at: entry.expires_at,
-                auth_method: entry.auth_method,
-                has_profile_arn: entry.has_profile_arn,
-                refresh_token_hash: entry.refresh_token_hash,
-                api_key_hash: entry.api_key_hash,
-                masked_api_key: entry.masked_api_key,
-                email: entry.email,
-                success_count: entry.success_count,
-                last_used_at: entry.last_used_at.clone(),
-                has_proxy: entry.has_proxy,
-                proxy_url: entry.proxy_url,
-                refresh_failure_count: entry.refresh_failure_count,
-                disabled_reason: entry.disabled_reason,
-                endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
+            .map(|entry| {
+                let (balance, balance_updated_at) = balance_snapshot
+                    .get(&entry.id)
+                    .filter(|c| (now_ts - c.cached_at) < BALANCE_CACHE_TTL_SECS as f64)
+                    .map(|c| (Some(c.data.clone()), Some(c.cached_at)))
+                    .unwrap_or((None, None));
+
+                CredentialStatusItem {
+                    id: entry.id,
+                    priority: entry.priority,
+                    disabled: entry.disabled,
+                    failure_count: entry.failure_count,
+                    is_current: entry.id == snapshot.current_id,
+                    expires_at: entry.expires_at,
+                    auth_method: entry.auth_method,
+                    has_profile_arn: entry.has_profile_arn,
+                    refresh_token_hash: entry.refresh_token_hash,
+                    api_key_hash: entry.api_key_hash,
+                    masked_api_key: entry.masked_api_key,
+                    email: entry.email,
+                    success_count: entry.success_count,
+                    last_used_at: entry.last_used_at.clone(),
+                    has_proxy: entry.has_proxy,
+                    proxy_url: entry.proxy_url,
+                    refresh_failure_count: entry.refresh_failure_count,
+                    disabled_reason: entry.disabled_reason,
+                    endpoint: entry.endpoint.unwrap_or_else(|| default_endpoint.clone()),
+                    balance,
+                    balance_updated_at,
+                }
             })
             .collect();
 
@@ -349,6 +367,60 @@ impl AdminService {
             available: snapshot.available,
             current_id: snapshot.current_id,
             credentials,
+        }
+    }
+
+    /// 一键禁用所有"已超额"的凭据（remaining ≤ 0 或 usage_percentage ≥ 100）
+    ///
+    /// 数据来源是 `balance_cache`，所以前端在调用前最好先触发一次"查询信息"
+    /// 或等待后台调度器完成首次刷新。返回 (禁用数量, 跳过数量, 已超额未禁用名单)。
+    pub fn disable_quota_exceeded(&self) -> QuotaExceededResult {
+        let snapshot = self.token_manager.snapshot();
+        let current_id = snapshot.current_id;
+
+        let cache_snapshot: HashMap<u64, CachedBalance> = {
+            let cache = self.balance_cache.lock();
+            cache.clone()
+        };
+        let now_ts = Utc::now().timestamp() as f64;
+
+        let mut disabled_ids: Vec<u64> = Vec::new();
+        let mut skipped_ids: Vec<u64> = Vec::new();
+        let mut switched_current = false;
+
+        for entry in snapshot.entries.iter() {
+            if entry.disabled {
+                continue;
+            }
+            let cached = match cache_snapshot.get(&entry.id) {
+                Some(c) if (now_ts - c.cached_at) < BALANCE_CACHE_TTL_SECS as f64 => c,
+                _ => continue,
+            };
+            let exceeded = cached.data.remaining <= 0.0 || cached.data.usage_percentage >= 100.0;
+            if !exceeded {
+                continue;
+            }
+            match self.token_manager.disable_quota_exceeded(entry.id) {
+                Ok(()) => {
+                    disabled_ids.push(entry.id);
+                    if entry.id == current_id {
+                        switched_current = true;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("一键超额：禁用凭据 #{} 失败: {}", entry.id, e);
+                    skipped_ids.push(entry.id);
+                }
+            }
+        }
+
+        if switched_current {
+            let _ = self.token_manager.switch_to_next();
+        }
+
+        QuotaExceededResult {
+            disabled_ids,
+            skipped_ids,
         }
     }
 
@@ -447,7 +519,79 @@ impl AdminService {
             remaining,
             usage_percentage,
             next_reset_at: usage.next_date_reset,
+            overage_enabled: usage.overage_enabled(),
+            overage_capable: usage.overage_capable(),
+            overage_capability_raw: usage
+                .subscription_info
+                .as_ref()
+                .and_then(|s| s.overage_capability.clone()),
         })
+    }
+
+    /// 批量刷新所有非禁用凭据的余额（用于后台调度）
+    ///
+    /// 串行执行以避免对上游产生瞬时高并发，每次成功的查询都会更新内存缓存
+    /// 与磁盘缓存。失败的条目不会清空旧缓存，调用方可在下次轮询时重试。
+    pub async fn refresh_all_balances(&self) -> (usize, usize) {
+        let snapshot = self.token_manager.snapshot();
+        let mut success = 0_usize;
+        let mut failure = 0_usize;
+
+        for entry in snapshot.entries.into_iter() {
+            if entry.disabled {
+                continue;
+            }
+            match self.fetch_balance(entry.id).await {
+                Ok(balance) => {
+                    {
+                        let mut cache = self.balance_cache.lock();
+                        cache.insert(
+                            entry.id,
+                            CachedBalance {
+                                cached_at: Utc::now().timestamp() as f64,
+                                data: balance,
+                            },
+                        );
+                    }
+                    success += 1;
+                }
+                Err(e) => {
+                    tracing::warn!("后台刷新凭据 #{} 余额失败: {}", entry.id, e);
+                    failure += 1;
+                }
+            }
+            // 节流，避免上游限流
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
+
+        if success > 0 {
+            self.save_balance_cache();
+        }
+        (success, failure)
+    }
+
+    /// 启动余额后台刷新调度器
+    ///
+    /// - 启动后立刻执行一次刷新
+    /// - 之后按 `interval` 周期循环刷新
+    /// - 调用方持有 `Arc<Self>` 即可，任务在后台 tokio runtime 上运行
+    pub fn start_balance_refresher(self: &Arc<Self>, interval: std::time::Duration) {
+        let svc = Arc::clone(self);
+        tokio::spawn(async move {
+            // 启动后稍等片刻，让上游/Token Manager 准备就绪
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            loop {
+                let started = std::time::Instant::now();
+                let (ok, err) = svc.refresh_all_balances().await;
+                tracing::info!(
+                    "余额后台刷新完成：成功 {}，失败 {}，耗时 {:.1}s",
+                    ok,
+                    err,
+                    started.elapsed().as_secs_f32()
+                );
+                tokio::time::sleep(interval).await;
+            }
+        });
     }
 
     /// 添加新凭据
@@ -603,6 +747,12 @@ impl AdminService {
     pub fn persist_admin_key(&self, new_key: &str) {
         let key = new_key.to_string();
         self.update_config_file(move |c| c.admin_api_key = Some(key));
+    }
+
+    /// 持久化新的业务 API Key 到配置文件
+    pub fn persist_api_key(&self, new_key: &str) {
+        let key = new_key.to_string();
+        self.update_config_file(move |c| c.api_key = Some(key));
     }
 
     /// 获取在线更新配置（GitHub Token 只返回是否已配置）
@@ -810,12 +960,112 @@ impl AdminService {
             })
     }
 
+    /// 一键开启所有"可开启超额且当前未开启"凭据的超额
+    /// 数据来源是 balance_cache（5 分钟有效）；若缓存缺失或 capable 状态未知则乐观尝试，
+    /// 由上游 setUserPreference 接口本身决定是否成功（不支持的订阅会返回 4xx 失败）。
+    pub async fn enable_overage_for_all_capable(&self) -> EnableOverageAllResult {
+        let snapshot = self.token_manager.snapshot();
+        let cache_snapshot: HashMap<u64, CachedBalance> = {
+            let cache = self.balance_cache.lock();
+            cache.clone()
+        };
+        let now_ts = Utc::now().timestamp() as f64;
+
+        // 选出需要操作的 ID 列表
+        let mut targets: Vec<u64> = Vec::new();
+        let mut skipped: Vec<u64> = Vec::new();
+        for entry in snapshot.entries.iter() {
+            if entry.disabled {
+                skipped.push(entry.id);
+                continue;
+            }
+            let cached = cache_snapshot.get(&entry.id).filter(|c| {
+                (now_ts - c.cached_at) < BALANCE_CACHE_TTL_SECS as f64
+            });
+
+            match cached {
+                // 缓存命中：明确不可开启，跳过
+                Some(c) if c.data.overage_capable == Some(false) => {
+                    skipped.push(entry.id);
+                    continue;
+                }
+                // 缓存命中：明确已开启，跳过
+                Some(c) if c.data.overage_enabled == Some(true) => {
+                    skipped.push(entry.id);
+                    continue;
+                }
+                // 其它（缓存缺失 / 状态未知 / 明确可开启未开启）— 乐观尝试
+                _ => targets.push(entry.id),
+            }
+        }
+
+        let mut enabled_ids: Vec<u64> = Vec::new();
+        let mut failed_ids: Vec<u64> = Vec::new();
+        let mut failure_messages: Vec<String> = Vec::new();
+
+        for id in targets {
+            match self.token_manager.set_user_preference_for(id, "ENABLED").await {
+                Ok(()) => {
+                    enabled_ids.push(id);
+                    // 失效本地缓存
+                    let mut cache = self.balance_cache.lock();
+                    cache.remove(&id);
+                }
+                Err(e) => {
+                    tracing::warn!("一键开启超额：凭据 #{} 失败: {}", id, e);
+                    failed_ids.push(id);
+                    failure_messages.push(e.to_string());
+                }
+            }
+            // 节流
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+
+        if !enabled_ids.is_empty() {
+            self.save_balance_cache();
+        }
+
+        EnableOverageAllResult {
+            enabled_ids,
+            skipped_ids: skipped,
+            failed_ids,
+            failure_messages,
+        }
+    }
+
     /// 强制刷新指定凭据的 Token
     pub async fn force_refresh_token(&self, id: u64) -> Result<(), AdminServiceError> {
         self.token_manager
             .force_refresh_token_for(id)
             .await
             .map_err(|e| self.classify_balance_error(e, id))
+    }
+
+    /// 设置凭据的"超额"开关（ENABLED / DISABLED）
+    /// 成功后会主动失效本地余额缓存，让下次列表刷新展示最新 overage 状态
+    pub async fn set_overage(&self, id: u64, enabled: bool) -> Result<(), AdminServiceError> {
+        let status = if enabled { "ENABLED" } else { "DISABLED" };
+        self.token_manager
+            .set_user_preference_for(id, status)
+            .await
+            .map_err(|e| self.classify_balance_error(e, id))?;
+
+        // 让本地缓存的 overage 状态失效（下次刷新时重新拉）
+        {
+            let mut cache = self.balance_cache.lock();
+            cache.remove(&id);
+        }
+        self.save_balance_cache();
+
+        // 异步触发一次新的余额查询（不阻塞响应）
+        let svc_handle = self.token_manager.clone();
+        tokio::spawn(async move {
+            if let Err(e) = svc_handle.get_usage_limits_for(id).await {
+                tracing::warn!("超额状态变更后预热余额失败 #{}: {}", id, e);
+            }
+        });
+
+        Ok(())
     }
 
     // ============ 余额缓存持久化 ============

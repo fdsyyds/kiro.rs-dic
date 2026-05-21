@@ -167,8 +167,10 @@ async fn main() {
     }
 
     // 构建 Anthropic API 路由（profile_arn 由 provider 层根据实际凭据动态注入）
-    let anthropic_app = anthropic::create_router_with_provider(
-        &api_key,
+    // 把 api_key 包成 Arc<RwLock<...>>，以便 Admin 模块运行时改 key 后立刻生效
+    let shared_api_key = std::sync::Arc::new(parking_lot::RwLock::new(api_key.clone()));
+    let anthropic_app = anthropic::create_router_with_shared_key(
+        shared_api_key.clone(),
         Some(kiro_provider),
         config.extract_thinking,
     );
@@ -188,7 +190,17 @@ async fn main() {
         } else {
             let admin_service =
                 admin::AdminService::new(token_manager.clone(), endpoint_names.clone());
-            let admin_state = admin::AdminState::new(admin_key, admin_service);
+            let admin_state = admin::AdminState::new(
+                admin_key,
+                shared_api_key.clone(),
+                admin_service,
+            );
+
+            // 启动余额后台刷新调度器（每 5 分钟一次，与缓存 TTL 对齐）
+            admin_state
+                .service
+                .start_balance_refresher(std::time::Duration::from_secs(300));
+
             let admin_app = admin::create_admin_router(admin_state);
 
             // 创建 Admin UI 路由

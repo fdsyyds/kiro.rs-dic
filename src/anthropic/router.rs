@@ -1,11 +1,14 @@
 //! Anthropic API 路由配置
 
+use std::sync::Arc;
+
 use axum::{
     Router,
     extract::DefaultBodyLimit,
     middleware,
     routing::{get, post},
 };
+use parking_lot::RwLock;
 
 use crate::kiro::provider::KiroProvider;
 
@@ -17,29 +20,24 @@ use super::{
 /// 请求体最大大小限制 (50MB)
 const MAX_BODY_SIZE: usize = 50 * 1024 * 1024;
 
-/// 创建 Anthropic API 路由
-///
-/// # 端点
-/// - `GET /v1/models` - 获取可用模型列表
-/// - `POST /v1/messages` - 创建消息（对话）
-/// - `POST /v1/messages/count_tokens` - 计算 token 数量
-///
-/// # 认证
-/// 所有 `/v1` 路径需要 API Key 认证，支持：
-/// - `x-api-key` header
-/// - `Authorization: Bearer <token>` header
-///
-/// # 参数
-/// - `api_key`: API 密钥，用于验证客户端请求
-/// - `kiro_provider`: 可选的 KiroProvider，用于调用上游 API
-
 /// 创建带有 KiroProvider 的 Anthropic API 路由
 pub fn create_router_with_provider(
     api_key: impl Into<String>,
     kiro_provider: Option<KiroProvider>,
     extract_thinking: bool,
 ) -> Router {
-    let mut state = AppState::new(api_key, extract_thinking);
+    let shared_key = Arc::new(RwLock::new(api_key.into()));
+    create_router_with_shared_key(shared_key, kiro_provider, extract_thinking)
+}
+
+/// 与 `create_router_with_provider` 相同，但允许调用方共享 api_key 内存
+/// （Admin 模块通过该 Arc 在运行时改 key 后能立刻生效）
+pub fn create_router_with_shared_key(
+    api_key: Arc<RwLock<String>>,
+    kiro_provider: Option<KiroProvider>,
+    extract_thinking: bool,
+) -> Router {
+    let mut state = AppState::with_shared_api_key(api_key, extract_thinking);
     if let Some(provider) = kiro_provider {
         state = state.with_kiro_provider(provider);
     }

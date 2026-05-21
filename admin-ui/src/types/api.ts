@@ -27,6 +27,10 @@ export interface CredentialStatusItem {
   refreshFailureCount: number
   disabledReason?: string
   endpoint: string
+  /** 后端缓存的最近一次余额（5 分钟内） */
+  balance?: BalanceResponse
+  /** 余额缓存的更新时间（Unix 秒） */
+  balanceUpdatedAt?: number
 }
 
 // 余额响应
@@ -38,6 +42,12 @@ export interface BalanceResponse {
   remaining: number
   usagePercentage: number
   nextResetAt: number | null
+  /** 用户是否当前开启了超额 */
+  overageEnabled?: boolean
+  /** 账号订阅是否可以开启超额 */
+  overageCapable?: boolean
+  /** 上游 overageCapability 原始字符串，用于排查"未知"状态 */
+  overageCapabilityRaw?: string
 }
 
 // 成功响应
