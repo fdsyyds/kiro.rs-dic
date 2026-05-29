@@ -41,6 +41,9 @@ pub struct UsageRecord {
     pub cache_creation_tokens: u64,
     #[serde(default)]
     pub cache_read_tokens: u64,
+    /// 上游 meteringEvent.usage 上报的 credit 计费量（浮点）
+    #[serde(default)]
+    pub credits: f64,
     /// 端到端耗时（毫秒）
     #[serde(default)]
     pub duration_ms: u64,
@@ -159,6 +162,7 @@ pub struct BucketStats {
     pub cache_read_tokens: u64,
     pub calls: u64,
     pub errors: u64,
+    pub credits: f64,
 }
 
 impl BucketStats {
@@ -167,6 +171,7 @@ impl BucketStats {
         self.output_tokens += rec.output_tokens;
         self.cache_creation_tokens += rec.cache_creation_tokens;
         self.cache_read_tokens += rec.cache_read_tokens;
+        self.credits += rec.credits;
         self.calls += 1;
         if rec.status != "success" {
             self.errors += 1;
@@ -226,6 +231,7 @@ pub struct TimeSeriesPoint {
     pub cache_read_tokens: u64,
     pub calls: u64,
     pub errors: u64,
+    pub credits: f64,
 }
 
 /// 模型分布
@@ -258,10 +264,12 @@ pub struct OverviewStats {
     pub today_input_tokens: u64,
     pub today_output_tokens: u64,
     pub today_errors: u64,
+    pub today_credits: f64,
     /// 最近 7 天累计
     pub week_calls: u64,
     pub week_input_tokens: u64,
     pub week_output_tokens: u64,
+    pub week_credits: f64,
 }
 
 impl UsageAggregator {
@@ -376,6 +384,7 @@ impl UsageAggregator {
                 cache_read_tokens: b.overall.cache_read_tokens,
                 calls: b.overall.calls,
                 errors: b.overall.errors,
+                credits: b.overall.credits,
             })
             .collect();
         points.sort_by_key(|p| p.ts.clone());
@@ -476,6 +485,7 @@ impl UsageAggregator {
             today.output_tokens += b.overall.output_tokens;
             today.calls += b.overall.calls;
             today.errors += b.overall.errors;
+            today.credits += b.overall.credits;
         }
 
         let week_cutoff = Utc::now().timestamp() - 7 * 24 * 3600;
@@ -484,6 +494,7 @@ impl UsageAggregator {
             week.input_tokens += b.overall.input_tokens;
             week.output_tokens += b.overall.output_tokens;
             week.calls += b.overall.calls;
+            week.credits += b.overall.credits;
         }
 
         OverviewStats {
@@ -491,9 +502,11 @@ impl UsageAggregator {
             today_input_tokens: today.input_tokens,
             today_output_tokens: today.output_tokens,
             today_errors: today.errors,
+            today_credits: today.credits,
             week_calls: week.calls,
             week_input_tokens: week.input_tokens,
             week_output_tokens: week.output_tokens,
+            week_credits: week.credits,
         }
     }
 }
@@ -570,6 +583,7 @@ mod tests {
             output_tokens: 200,
             cache_creation_tokens: 0,
             cache_read_tokens: 0,
+            credits: 0.05,
             duration_ms: 1500,
             status: "success".to_string(),
         };
@@ -605,6 +619,7 @@ mod tests {
             output_tokens: 0,
             cache_creation_tokens: 0,
             cache_read_tokens: 0,
+            credits: 0.0,
             duration_ms: 100,
             status: "error".to_string(),
         };

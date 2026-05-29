@@ -452,6 +452,8 @@ impl SseStateManager {
         &mut self,
         input_tokens: i32,
         output_tokens: i32,
+        cache_creation_input_tokens: i32,
+        cache_read_input_tokens: i32,
     ) -> Vec<SseEvent> {
         let mut events = Vec::new();
 
@@ -483,8 +485,8 @@ impl SseStateManager {
                     "usage": {
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
-                        "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 0
+                        "cache_creation_input_tokens": cache_creation_input_tokens,
+                        "cache_read_input_tokens": cache_read_input_tokens
                     }
                 }),
             ));
@@ -538,6 +540,12 @@ pub struct StreamContext {
     /// 是否需要剥离 thinking 内容开头的换行符
     /// 模型输出 `<thinking>\n` 时，`\n` 可能与标签在同一 chunk 或下一 chunk
     strip_thinking_leading_newline: bool,
+    /// 缓存写入（创建）token：来自中转层 PromptCache 计费
+    pub cache_creation_input_tokens: i32,
+    /// 缓存命中（读取）token：来自中转层 PromptCache 计费
+    pub cache_read_input_tokens: i32,
+    /// meteringEvent 上报的 credit 计费量（上游真实下发）
+    pub credits: f64,
 }
 
 impl StreamContext {
@@ -564,6 +572,9 @@ impl StreamContext {
             thinking_block_index: None,
             text_block_index: None,
             strip_thinking_leading_newline: false,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            credits: 0.0,
         }
     }
 
@@ -649,6 +660,12 @@ impl StreamContext {
                     context_usage.context_usage_percentage,
                     actual_input_tokens
                 );
+                Vec::new()
+            }
+            Event::Metering(metering) => {
+                // 上游 meteringEvent 只下发 credit；token / cache 字段不存在。
+                self.credits += metering.usage;
+                tracing::debug!("metering credits +{:.6}", metering.usage);
                 Vec::new()
             }
             Event::Error {
@@ -1114,14 +1131,16 @@ impl StreamContext {
             events.extend(self.create_text_delta_events(" "));
         }
 
-        // contextUsageEvent 给出的是总输入；无 prompt cache 时直接使用
+        // input: contextUsage 真实值优先；否则用客户端估算
         let final_input_tokens = self.context_input_tokens.unwrap_or(self.input_tokens);
 
         // 生成最终事件
-        events.extend(
-            self.state_manager
-                .generate_final_events(final_input_tokens, self.output_tokens),
-        );
+        events.extend(self.state_manager.generate_final_events(
+            final_input_tokens,
+            self.output_tokens,
+            self.cache_creation_input_tokens,
+            self.cache_read_input_tokens,
+        ));
         events
     }
 }
@@ -1169,6 +1188,12 @@ impl BufferedStreamContext {
         }
     }
 
+    /// 注入由 PromptCache 计算的初始 cache_creation / cache_read tokens
+    pub fn set_initial_cache_tokens(&mut self, creation: i32, read: i32) {
+        self.inner.cache_creation_input_tokens = creation;
+        self.inner.cache_read_input_tokens = read;
+    }
+
     /// 处理 Kiro 事件并缓冲结果
     ///
     /// 复用 StreamContext 的事件处理逻辑，但把结果缓存而不是立即发送。
@@ -1199,22 +1224,26 @@ impl BufferedStreamContext {
             self.initial_events_generated = true;
         }
 
-        // 生成最终事件
-        let final_events = self.inner.generate_final_events();
-        self.event_buffer.extend(final_events);
-
-        // contextUsageEvent 给出的是总输入；无 prompt cache 时直接使用
+        // input: contextUsage 真实值优先；否则用客户端估算
         let final_input_tokens = self
             .inner
             .context_input_tokens
             .unwrap_or(self.estimated_input_tokens);
+        let cache_creation = self.inner.cache_creation_input_tokens;
+        let cache_read = self.inner.cache_read_input_tokens;
 
-        // 更正 message_start 事件中的 input_tokens
+        // 生成最终事件（StreamContext 内部会用同样的优先级）
+        let final_events = self.inner.generate_final_events();
+        self.event_buffer.extend(final_events);
+
+        // 更正 message_start 事件中的 input_tokens 与 cache_* 字段
         for event in &mut self.event_buffer {
             if event.event == "message_start" {
                 if let Some(message) = event.data.get_mut("message") {
                     if let Some(usage) = message.get_mut("usage") {
                         usage["input_tokens"] = serde_json::json!(final_input_tokens);
+                        usage["cache_creation_input_tokens"] = serde_json::json!(cache_creation);
+                        usage["cache_read_input_tokens"] = serde_json::json!(cache_read);
                     }
                 }
             }
@@ -1225,19 +1254,26 @@ impl BufferedStreamContext {
 
     /// 取出最终用量（在 finish_and_get_all_events 之后调用）
     ///
-    /// 返回顺序：(input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens)
-    /// prompt cache 已下线，cache_* 永远为 0。
-    pub fn final_usage(&self) -> (i32, i32, i32, i32) {
+    /// 返回顺序：(input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, credits)
+    pub fn final_usage(&self) -> (i32, i32, i32, i32, f64) {
         let final_input = self
             .inner
             .context_input_tokens
             .unwrap_or(self.estimated_input_tokens);
-        (final_input, self.inner.output_tokens, 0, 0)
+        (
+            final_input,
+            self.inner.output_tokens,
+            self.inner.cache_creation_input_tokens,
+            self.inner.cache_read_input_tokens,
+            self.inner.credits,
+        )
     }
 }
 
-/// 简单的 token 估算
-fn estimate_tokens(text: &str) -> i32 {
+/// 简单的 token 估算（中英文字符混合）
+///
+/// 公开供 prompt_cache 等模块复用同一估算口径。
+pub fn estimate_tokens(text: &str) -> i32 {
     let chars: Vec<char> = text.chars().collect();
     let mut chinese_count = 0;
     let mut other_count = 0;

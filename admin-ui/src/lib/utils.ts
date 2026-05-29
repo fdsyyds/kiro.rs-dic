@@ -124,6 +124,16 @@ export function formatNumber(value: number | null | undefined): string {
 }
 
 /**
+ * Credit 计费量展示：上游 meteringEvent.usage 是浮点（如 0.0169543），
+ * 单位为 "credit"。展示规则：< 1 → 4 位小数；≥ 1 → 走 formatNumber 紧凑模式。
+ */
+export function formatCredits(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value) || value <= 0) return '0'
+  if (value < 1) return value.toFixed(4)
+  return formatNumber(value)
+}
+
+/**
  * 脱敏代理 URL：将 user:pass@host 中的认证信息替换为 xxx****xxx
  */
 export function maskProxyUrl(url: string): string {

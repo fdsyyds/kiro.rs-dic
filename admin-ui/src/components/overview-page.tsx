@@ -2,13 +2,13 @@ import { useMemo, useState } from 'react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { Activity, Cpu, KeyRound, Server } from 'lucide-react'
+import { Activity, Coins, Cpu, KeyRound, Server } from 'lucide-react'
 import { useByCredential, useByModel, useOverview, useTimeSeries } from '@/hooks/use-stats'
 import type { StatsRange } from '@/types/api'
 import { TimeSeriesChart } from '@/components/charts/time-series-chart'
 import { ModelPieChart } from '@/components/charts/model-pie-chart'
 import { CredentialBarChart } from '@/components/charts/credential-bar-chart'
-import { formatNumber } from '@/lib/utils'
+import { formatCredits, formatNumber } from '@/lib/utils'
 
 const RANGES: { label: string; value: StatsRange }[] = [
   { label: '24 小时', value: '24h' },
@@ -40,9 +40,10 @@ export function OverviewPage() {
         acc.errors += p.errors
         acc.inputTokens += p.inputTokens
         acc.outputTokens += p.outputTokens
+        acc.credits += p.credits ?? 0
         return acc
       },
-      { calls: 0, errors: 0, inputTokens: 0, outputTokens: 0 },
+      { calls: 0, errors: 0, inputTokens: 0, outputTokens: 0, credits: 0 },
     )
   }, [seriesData])
   const rangeText = RANGES.find((r) => r.value === range)?.label ?? range
@@ -57,7 +58,7 @@ export function OverviewPage() {
       </div>
 
       {/* 顶部卡片 */}
-      <div className="grid gap-4 md:grid-cols-4 mb-6">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 mb-6">
         <StatCard
           icon={<Activity className="h-4 w-4" />}
           label={`近 ${rangeText}调用`}
@@ -77,6 +78,14 @@ export function OverviewPage() {
           icon={<Cpu className="h-4 w-4" />}
           label={`近 ${rangeText}输出 Token`}
           value={formatNumber(rangeStats.outputTokens)}
+        />
+        <StatCard
+          icon={<Coins className="h-4 w-4" />}
+          label={`近 ${rangeText} Credit`}
+          value={formatCredits(rangeStats.credits)}
+          extra={
+            <span className="text-[11px] text-muted-foreground">上游计费量</span>
+          }
         />
         <StatCard
           icon={<KeyRound className="h-4 w-4" />}

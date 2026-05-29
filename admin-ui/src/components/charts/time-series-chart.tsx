@@ -11,7 +11,7 @@ import {
 } from 'recharts'
 import type { TimeSeriesPoint, StatsRange } from '@/types/api'
 import { tooltipCursorStyle } from './tooltip-style'
-import { formatNumber } from '@/lib/utils'
+import { formatCredits, formatNumber } from '@/lib/utils'
 
 interface Props {
   data: TimeSeriesPoint[]
@@ -24,6 +24,7 @@ const COLORS = {
   cacheCreation: '#f59e0b',
   cacheRead: '#06b6d4',
   cacheHitRate: '#a855f7',
+  credits: '#ec4899',
 } as const
 
 const SERIES = [
@@ -61,7 +62,12 @@ function pickXAxisInterval(len: number): number | 'preserveStartEnd' {
 
 function ChartTooltip({ active, payload, label }: {
   active?: boolean
-  payload?: ReadonlyArray<{ dataKey?: string | number; value?: number; color?: string }>
+  payload?: ReadonlyArray<{
+    dataKey?: string | number
+    value?: number
+    color?: string
+    payload?: ChartPoint
+  }>
   label?: string
 }) {
   if (!active || !payload?.length) return null
@@ -72,6 +78,8 @@ function ChartTooltip({ active, payload, label }: {
       map.set(p.dataKey, p.value)
     }
   })
+  // credits 不画线，从原始数据点里直接取
+  const credits = payload[0]?.payload?.credits ?? 0
   return (
     <div
       style={{
@@ -106,6 +114,30 @@ function ChartTooltip({ active, payload, label }: {
           </div>
         )
       })}
+      {credits > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '4px 0 0',
+            marginTop: 4,
+            borderTop: '1px solid rgba(255,255,255,0.08)',
+          }}
+        >
+          <span
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: 2,
+              background: COLORS.credits,
+              display: 'inline-block',
+            }}
+          />
+          <span style={{ flex: 1 }}>Credit:</span>
+          <span style={{ fontVariantNumeric: 'tabular-nums' }}>{formatCredits(credits)}</span>
+        </div>
+      )}
     </div>
   )
 }

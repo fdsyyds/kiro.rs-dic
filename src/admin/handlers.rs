@@ -792,7 +792,7 @@ fn parse_range(params: &std::collections::HashMap<String, String>) -> Range {
 
 /// GET /api/admin/stats/overview
 pub async fn stats_overview(State(state): State<AdminState>) -> impl IntoResponse {
-    let mut overview = state.usage_aggregator.overview();
+    let overview = state.usage_aggregator.overview();
     // 附加：当前活跃 Key / 凭据数
     let active_keys = state.client_keys.active_count() as u64;
     let snapshot = state.service.get_all_credentials();
@@ -806,14 +806,14 @@ pub async fn stats_overview(State(state): State<AdminState>) -> impl IntoRespons
         "todayInputTokens": overview.today_input_tokens,
         "todayOutputTokens": overview.today_output_tokens,
         "todayErrors": overview.today_errors,
+        "todayCredits": overview.today_credits,
         "weekCalls": overview.week_calls,
         "weekInputTokens": overview.week_input_tokens,
         "weekOutputTokens": overview.week_output_tokens,
+        "weekCredits": overview.week_credits,
         "activeClientKeys": active_keys,
         "activeCredentials": active_credentials,
     });
-    // 额外引用 overview 字段以避免编译器错误
-    let _ = (&mut overview).today_calls;
     Json(response)
 }
 
