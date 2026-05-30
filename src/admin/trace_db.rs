@@ -428,6 +428,59 @@ impl TraceStore {
             Err(e) => tracing::warn!("trace 清理失败: {}", e),
         }
     }
+
+    /// 按凭据聚合失败跳数，归并为三类：鉴权 / 账号风控 / 其他。
+    /// 统计 trace_attempts 里 outcome != 'success' 的跳，按 credential_id + outcome 分组。
+    /// 返回 credential_id → (auth, throttle, other)。仅 warn 失败，返回空。
+    pub fn failure_stats(&self) -> std::collections::HashMap<u64, FailureStats> {
+        let conn = self.conn.lock();
+        let mut out: std::collections::HashMap<u64, FailureStats> =
+            std::collections::HashMap::new();
+        let mut stmt = match conn.prepare(
+            "SELECT credential_id, outcome, COUNT(*) FROM trace_attempts \
+             WHERE outcome != 'success' AND credential_id != 0 \
+             GROUP BY credential_id, outcome",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("trace failure_stats prepare 失败: {}", e);
+                return out;
+            }
+        };
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as u64,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? as u64,
+            ))
+        });
+        let rows = match rows {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("trace failure_stats 查询失败: {}", e);
+                return out;
+            }
+        };
+        for r in rows.flatten() {
+            let (cred, outcome_str, cnt) = r;
+            let s = out.entry(cred).or_default();
+            match outcome_str.as_str() {
+                "auth_failed" => s.auth += cnt,
+                "account_throttled" => s.throttle += cnt,
+                _ => s.other += cnt,
+            }
+        }
+        out
+    }
+}
+
+/// 按凭据的失败分类计数（鉴权 / 账号风控 / 其他）
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FailureStats {
+    pub auth: u64,
+    pub throttle: u64,
+    pub other: u64,
 }
 
 /// 共享存储句柄

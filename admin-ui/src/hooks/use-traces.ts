@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { getTraces } from '@/api/traces'
+import { getTraces, getFailureStats } from '@/api/traces'
 import type { TraceQuery } from '@/types/api'
 
 /**
@@ -16,6 +16,17 @@ export function useTraces(query: TraceQuery, enabled = true) {
     refetchInterval: enabled ? 30_000 : false,
     staleTime: 10_000,
     placeholderData: keepPreviousData,
+    refetchOnWindowFocus: false,
+  })
+}
+
+/** 按凭据的失败分类计数（鉴权/风控/其他），用于卡片分色展示 */
+export function useFailureStats() {
+  return useQuery({
+    queryKey: ['traces', 'failure-stats'],
+    queryFn: getFailureStats,
+    refetchInterval: 30_000,
+    staleTime: 10_000,
     refetchOnWindowFocus: false,
   })
 }

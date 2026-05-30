@@ -12,6 +12,8 @@ export interface CredentialStatusItem {
   priority: number
   disabled: boolean
   failureCount: number
+  /** 累计失败次数（所有失败类型，只增不减，仅手动重置归零） */
+  totalFailureCount: number
   isCurrent: boolean
   expiresAt: string | null
   authMethod: string | null
@@ -424,3 +426,13 @@ export interface TracePage {
   records: TraceRecord[]
   total: number
 }
+
+/** 单凭据失败分类计数（鉴权 / 账号风控 / 其他） */
+export interface FailureStats {
+  auth: number
+  throttle: number
+  other: number
+}
+
+/** credentialId(字符串) → 失败分类计数 */
+export type FailureStatsMap = Record<string, FailureStats>

@@ -1005,3 +1005,24 @@ pub async fn list_traces(
         .collect();
     Json(serde_json::json!({ "records": enriched, "total": total }))
 }
+
+/// GET /api/admin/traces/failure-stats
+/// 按凭据聚合失败次数（鉴权 / 账号风控 / 其他三类），用于卡片分色展示。
+/// 返回 { "<credentialId>": { auth, throttle, other }, ... }
+pub async fn trace_failure_stats(State(state): State<AdminState>) -> impl IntoResponse {
+    let stats = state.trace_store.failure_stats();
+    let map: std::collections::HashMap<String, serde_json::Value> = stats
+        .into_iter()
+        .map(|(id, s)| {
+            (
+                id.to_string(),
+                serde_json::json!({
+                    "auth": s.auth,
+                    "throttle": s.throttle,
+                    "other": s.other,
+                }),
+            )
+        })
+        .collect();
+    Json(map)
+}

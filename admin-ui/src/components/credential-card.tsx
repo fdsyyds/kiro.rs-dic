@@ -64,6 +64,8 @@ interface CredentialCardProps {
   balance: BalanceResponse | null;
   loadingBalance: boolean;
   onRefreshBalance: () => void;
+  /** 该凭据的失败分类计数（来自 trace 聚合）；无数据时回退 totalFailureCount */
+  failureStats?: { auth: number; throttle: number; other: number };
 }
 
 function formatLastUsed(lastUsedAt: string | null): string {
@@ -187,6 +189,7 @@ export function CredentialCard({
   balance,
   loadingBalance,
   onRefreshBalance,
+  failureStats,
 }: CredentialCardProps) {
   const [editingPriority, setEditingPriority] = useState(false);
   const [priorityValue, setPriorityValue] = useState(
@@ -515,14 +518,30 @@ export function CredentialCard({
                 <button
                   type="button"
                   onClick={() => setShowFailuresDialog(true)}
-                  className={`inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 font-medium tabular-nums transition-colors hover:bg-accent hover:text-primary ${
-                    credential.failureCount > 0
-                      ? "text-destructive"
-                      : "text-muted-foreground"
-                  }`}
-                  title="点击查看失败日志详情"
+                  className="inline-flex cursor-pointer items-center gap-1 rounded px-1.5 py-0.5 font-medium tabular-nums transition-colors hover:bg-accent"
+                  title="鉴权失败 / 账号风控 / 其他（额度·瞬态·网络等）。点击查看失败日志详情"
                 >
-                  {credential.failureCount}
+                  {failureStats ? (
+                    <span className="tabular-nums">
+                      <span className="text-destructive">{failureStats.auth}</span>
+                      <span className="text-muted-foreground/50">/</span>
+                      <span className="text-amber-600 dark:text-amber-400">
+                        {failureStats.throttle}
+                      </span>
+                      <span className="text-muted-foreground/50">/</span>
+                      <span className="text-muted-foreground">{failureStats.other}</span>
+                    </span>
+                  ) : (
+                    <span
+                      className={
+                        credential.totalFailureCount > 0
+                          ? "text-destructive"
+                          : "text-muted-foreground"
+                      }
+                    >
+                      {credential.totalFailureCount}
+                    </span>
+                  )}
                   <ScrollText className="h-3.5 w-3.5 opacity-70" />
                 </button>
               </dd>

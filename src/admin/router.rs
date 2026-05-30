@@ -13,7 +13,7 @@ use super::{
         delete_proxy, disable_quota_exceeded, enable_overage_all, export_kam_credentials,
         force_refresh_token, get_account_throttle_config, get_all_credentials,
         get_credential_balance, get_global_proxy, get_load_balancing_mode, get_log_governance_config,
-        get_proxy_pool, get_update_config, list_client_keys, list_traces, poll_idc_login,
+        get_proxy_pool, get_update_config, list_client_keys, list_traces, trace_failure_stats, poll_idc_login,
         poll_idc_relogin, poll_social_login,
         poll_social_relogin, pull_update_image, reset_all_success_count, reset_client_key_stats,
         reset_failure_count, reset_success_count, rollback_image_update,
@@ -147,6 +147,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/stats/timeseries", get(stats_timeseries))
         .route("/stats/by-model", get(stats_by_model))
         .route("/stats/by-credential", get(stats_by_credential))
+        .route("/traces/failure-stats", get(trace_failure_stats))
         .route("/traces", get(list_traces))
         .layer(middleware::from_fn_with_state(
             state.clone(),

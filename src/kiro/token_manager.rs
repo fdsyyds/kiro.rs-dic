@@ -478,6 +478,9 @@ struct CredentialEntry {
     credentials: KiroCredentials,
     /// API 调用连续失败次数
     failure_count: u32,
+    /// API 调用累计失败次数（含所有失败类型：鉴权/额度/风控/瞬态/网络）。
+    /// 只增不减，成功不清零，仅手动重置失败计数时归零。仅用于展示与排查。
+    total_failure_count: u64,
     /// Token 刷新连续失败次数
     refresh_failure_count: u32,
     /// 是否已禁用
@@ -515,6 +518,8 @@ enum DisabledReason {
 #[derive(Serialize, Deserialize)]
 struct StatsEntry {
     success_count: u64,
+    #[serde(default)]
+    total_failure_count: u64,
     last_used_at: Option<String>,
 }
 
@@ -534,6 +539,8 @@ pub struct CredentialEntrySnapshot {
     pub disabled: bool,
     /// 连续失败次数
     pub failure_count: u32,
+    /// 累计失败次数（所有失败类型，只增不减，仅手动重置归零）
+    pub total_failure_count: u64,
     /// 认证方式
     pub auth_method: Option<String>,
     /// 是否有 Profile ARN
@@ -679,6 +686,7 @@ impl MultiTokenManager {
                     id,
                     credentials: cred.clone(),
                     failure_count: 0,
+                    total_failure_count: 0,
                     refresh_failure_count: 0,
                     disabled: cred.disabled, // 从配置文件读取 disabled 状态
                     disabled_reason: if cred.disabled {
@@ -1310,6 +1318,7 @@ impl MultiTokenManager {
         for entry in entries.iter_mut() {
             if let Some(s) = stats.get(&entry.id.to_string()) {
                 entry.success_count = s.success_count;
+                entry.total_failure_count = s.total_failure_count;
                 entry.last_used_at = s.last_used_at.clone();
             }
         }
@@ -1334,6 +1343,7 @@ impl MultiTokenManager {
                         e.id.to_string(),
                         StatsEntry {
                             success_count: e.success_count,
+                            total_failure_count: e.total_failure_count,
                             last_used_at: e.last_used_at.clone(),
                         },
                     )
@@ -1419,6 +1429,7 @@ impl MultiTokenManager {
             }
 
             entry.failure_count += 1;
+            entry.total_failure_count += 1;
             entry.last_used_at = Some(Utc::now().to_rfc3339());
             let failure_count = entry.failure_count;
 
@@ -1482,6 +1493,7 @@ impl MultiTokenManager {
             entry.last_used_at = Some(Utc::now().to_rfc3339());
             // 设为阈值，便于在管理面板中直观看到该凭据已不可用
             entry.failure_count = MAX_FAILURES_PER_CREDENTIAL;
+            entry.total_failure_count += 1;
 
             tracing::error!(
                 "凭据 #{} 额度已用尽（MONTHLY_REQUEST_COUNT 或 OVERAGE_REQUEST_LIMIT_EXCEEDED），已被禁用",
@@ -1687,6 +1699,7 @@ impl MultiTokenManager {
                     priority: e.credentials.priority,
                     disabled: e.disabled,
                     failure_count: e.failure_count,
+                    total_failure_count: e.total_failure_count,
                     auth_method: if e.credentials.is_api_key_credential() {
                         Some("api_key".to_string())
                     } else {
@@ -1792,6 +1805,8 @@ impl MultiTokenManager {
                     Some(prev) if prev > until => prev,
                     _ => until,
                 });
+                // 计入累计失败（账号风控不动连续 failure_count，避免冷却结束后误禁用）
+                entry.total_failure_count += 1;
                 tracing::warn!(
                     "凭据 #{} 触发账号级风控，冷却 {} 秒",
                     id,
@@ -1873,6 +1888,7 @@ impl MultiTokenManager {
                 anyhow::bail!("凭据 #{} 因配置无效被禁用，请修正配置后重启服务", id);
             }
             entry.failure_count = 0;
+            entry.total_failure_count = 0;
             entry.refresh_failure_count = 0;
             entry.disabled = false;
             entry.disabled_reason = None;
@@ -2236,6 +2252,7 @@ impl MultiTokenManager {
                 id: new_id,
                 credentials: validated_cred,
                 failure_count: 0,
+                total_failure_count: 0,
                 refresh_failure_count: 0,
                 disabled: false,
                 disabled_reason: None,

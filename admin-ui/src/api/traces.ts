@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { storage } from '@/lib/storage'
-import type { TracePage, TraceQuery } from '@/types/api'
+import type { FailureStatsMap, TracePage, TraceQuery } from '@/types/api'
 
 const api = axios.create({
   baseURL: '/api/admin',
@@ -26,5 +26,10 @@ export async function getTraces(query: TraceQuery): Promise<TracePage> {
   if (query.limit != null) params.limit = String(query.limit)
   if (query.offset != null) params.offset = String(query.offset)
   const { data } = await api.get<TracePage>('/traces', { params })
+  return data
+}
+
+export async function getFailureStats(): Promise<FailureStatsMap> {
+  const { data } = await api.get<FailureStatsMap>('/traces/failure-stats')
   return data
 }

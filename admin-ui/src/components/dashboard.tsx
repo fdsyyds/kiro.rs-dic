@@ -86,6 +86,7 @@ import {
   useSetPriority,
 } from "@/hooks/use-credentials";
 import { useUpdateCheck } from "@/hooks/use-update-check";
+import { useFailureStats } from "@/hooks/use-traces";
 import { useRectSelect } from "@/hooks/use-rect-select";
 import {
   DndContext,
@@ -184,6 +185,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
   const resetAllSuccess = useResetAllSuccessCount();
   const setPriority = useSetPriority();
   const { data: updateCheck } = useUpdateCheck();
+  const { data: failureStatsMap } = useFailureStats();
 
   const totalPages = Math.ceil((data?.credentials.length || 0) / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
@@ -1364,6 +1366,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                       onRefreshBalance={() =>
                         handleRefreshBalance(credential.id)
                       }
+                      failureStats={failureStatsMap?.[String(credential.id)]}
                     />
                   ))}
                 </div>
