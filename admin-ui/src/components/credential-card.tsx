@@ -876,7 +876,7 @@ export function CredentialCard({
             <Button
               variant="destructive"
               onClick={handleDelete}
-              disabled={deleteCredential.isPending || !credential.disabled}
+              disabled={deleteCredential.isPending}
             >
               确认删除
             </Button>
