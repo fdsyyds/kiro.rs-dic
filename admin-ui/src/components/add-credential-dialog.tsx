@@ -46,6 +46,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [endpoint, setEndpoint] = useState('')
   const [groups, setGroups] = useState<string[]>([])
   const [sourceChannel, setSourceChannel] = useState('')
+  const [rpmLimit, setRpmLimit] = useState('')
 
   const groupOptions = useGroupOptions()
 
@@ -69,6 +70,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     setEndpoint('')
     setGroups([])
     setSourceChannel('')
+    setRpmLimit('')
   }
 
   const isApiKey = authMethod === 'api_key'
@@ -119,6 +121,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         proxyPassword: proxyPassword.trim() || undefined,
         endpoint: endpoint.trim() || undefined,
         groups: groups,
+        rpmLimit: Number(rpmLimit) > 0 ? Number(rpmLimit) : undefined,
         sourceChannel: sourceChannel.trim() || undefined,
       },
       {
@@ -368,6 +371,25 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
             </div>
 
             {/* 账号来源渠道 */}
+            <div className="space-y-2">
+              <label htmlFor="rpmLimit" className="text-sm font-medium">
+                RPM Limit
+              </label>
+              <Input
+                id="rpmLimit"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0 = unlimited"
+                value={rpmLimit}
+                onChange={(e) => setRpmLimit(e.target.value)}
+                disabled={isPending}
+              />
+              <p className="text-xs text-muted-foreground">
+                Per-account requests per minute. Empty or 0 means unlimited.
+              </p>
+            </div>
+
             <div className="space-y-2">
               <label htmlFor="sourceChannel" className="text-sm font-medium">
                 账号来源渠道（备注）

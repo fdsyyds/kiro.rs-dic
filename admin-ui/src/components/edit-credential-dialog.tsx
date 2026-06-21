@@ -43,6 +43,9 @@ export function EditCredentialDialog({
   const [proxyPassword, setProxyPassword] = useState('')
   const [groups, setGroups] = useState<string[]>(credential.groups ?? [])
   const [sourceChannel, setSourceChannel] = useState(credential.sourceChannel ?? '')
+  const [rpmLimit, setRpmLimit] = useState(
+    credential.rpmLimit ? String(credential.rpmLimit) : ''
+  )
   const [manualMode, setManualMode] = useState(false)
 
   const groupOptions = useGroupOptions()
@@ -62,6 +65,7 @@ export function EditCredentialDialog({
       setProxyPassword('')
       setGroups(credential.groups ?? [])
       setSourceChannel(credential.sourceChannel ?? '')
+      setRpmLimit(credential.rpmLimit ? String(credential.rpmLimit) : '')
       setManualMode(false)
     }
   }, [open, credential])
@@ -80,6 +84,7 @@ export function EditCredentialDialog({
           proxyUsername: proxyUsername || undefined,
           proxyPassword: proxyPassword || undefined,
           groups: groups,
+          rpmLimit: Number(rpmLimit) > 0 ? Number(rpmLimit) : 0,
           sourceChannel: sourceChannel,
         },
       },
@@ -150,6 +155,25 @@ export function EditCredentialDialog({
             </div>
 
             {/* 账号来源渠道 */}
+            <div className="space-y-2">
+              <label htmlFor="rpmLimit" className="text-sm font-medium">
+                RPM Limit
+              </label>
+              <Input
+                id="rpmLimit"
+                type="number"
+                min="0"
+                step="1"
+                placeholder="0 = unlimited"
+                value={rpmLimit}
+                onChange={(e) => setRpmLimit(e.target.value)}
+                disabled={isPending}
+              />
+              <p className="text-xs text-muted-foreground">
+                Current RPM: {credential.currentRpm ?? 0}. Empty or 0 means unlimited.
+              </p>
+            </div>
+
             <div className="space-y-2">
               <label htmlFor="sourceChannel" className="text-sm font-medium">
                 账号来源渠道（备注）

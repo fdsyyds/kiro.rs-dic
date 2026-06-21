@@ -35,6 +35,8 @@ import type {
   UpdateCheckInfo,
   GitHubRateLimitInfo,
   UpdateAdminKeyRequest,
+  PoolStatusResponse,
+  RpmResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -69,6 +71,16 @@ api.interceptors.request.use((config) => {
 // 获取所有凭据状态
 export async function getCredentials(): Promise<CredentialsStatusResponse> {
   const { data } = await api.get<CredentialsStatusResponse>('/credentials')
+  return data
+}
+
+export async function getPoolStatus(): Promise<PoolStatusResponse> {
+  const { data } = await api.get<PoolStatusResponse>('/pool-status')
+  return data
+}
+
+export async function getRpm(): Promise<RpmResponse | null> {
+  const { data } = await api.get<RpmResponse | null>('/rpm')
   return data
 }
 

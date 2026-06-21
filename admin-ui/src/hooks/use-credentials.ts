@@ -20,6 +20,8 @@ import {
   setLogGovernanceConfig,
   resetSuccessCount,
   resetAllSuccessCount,
+  getPoolStatus,
+  getRpm,
 } from '@/api/credentials'
 import type { AddCredentialRequest, UpdateCredentialRequest, UpdateRefreshTokenRequest } from '@/types/api'
 
@@ -29,6 +31,22 @@ export function useCredentials() {
     queryKey: ['credentials'],
     queryFn: getCredentials,
     refetchInterval: 30000, // 每 30 秒刷新一次
+  })
+}
+
+export function usePoolStatus() {
+  return useQuery({
+    queryKey: ['poolStatus'],
+    queryFn: getPoolStatus,
+    refetchInterval: 10000,
+  })
+}
+
+export function useRpm() {
+  return useQuery({
+    queryKey: ['rpm'],
+    queryFn: getRpm,
+    refetchInterval: 10000,
   })
 }
 
@@ -60,6 +78,7 @@ export function useSetDisabled() {
       setCredentialDisabled(id, disabled),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['poolStatus'] })
     },
   })
 }
@@ -72,6 +91,7 @@ export function useSetPriority() {
       setCredentialPriority(id, priority),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['credentials'] })
+      queryClient.invalidateQueries({ queryKey: ['poolStatus'] })
     },
   })
 }

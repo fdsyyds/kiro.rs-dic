@@ -18,6 +18,7 @@ use kiro::provider::KiroProvider;
 use kiro::token_manager::MultiTokenManager;
 use model::arg::Args;
 use model::config::Config;
+use model::rpm::RpmTracker;
 
 #[tokio::main]
 async fn main() {
@@ -71,6 +72,7 @@ async fn main() {
                 kiro_api_key: Some(kiro_api_key),
                 auth_method: Some("api_key".to_string()),
                 priority: 0,
+                rpm_limit: None,
                 ..Default::default()
             };
             credentials_list.insert(0, api_key_cred);
@@ -159,12 +161,14 @@ async fn main() {
         std::process::exit(1);
     });
     let token_manager = Arc::new(token_manager);
+    let rpm_tracker = Arc::new(RpmTracker::new());
     let kiro_provider = KiroProvider::with_proxy(
         token_manager.clone(),
         proxy_config.clone(),
         endpoints,
         config.default_endpoint.clone(),
-    );
+    )
+    .with_rpm_tracker(rpm_tracker.clone());
 
     // 初始化 count_tokens 配置
     token::init_config(token::CountTokensConfig {
@@ -285,6 +289,7 @@ async fn main() {
             });
             let admin_service =
                 admin::AdminService::new(token_manager.clone(), endpoint_names.clone())
+                    .with_rpm_tracker(rpm_tracker.clone())
                     .with_log_governance(
                         Some(admin_trace_store.clone()),
                         Some(usage_recorder.clone()),

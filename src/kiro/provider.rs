@@ -18,6 +18,7 @@ use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::MultiTokenManager;
 use crate::model::config::TlsBackend;
+use crate::model::rpm::RpmTracker;
 use parking_lot::Mutex;
 
 /// 每个凭据的最大重试次数
@@ -113,6 +114,7 @@ pub struct KiroProvider {
     /// `ListAvailableProfiles`。命中真实 ARN 的账号会把 ARN 持久化进凭据，之后
     /// 通过 `streaming_profile_arn()` 直接命中，不再进入解析路径。
     profile_resolution_attempted: Mutex<HashSet<u64>>,
+    rpm_tracker: Option<Arc<RpmTracker>>,
 }
 
 impl KiroProvider {
@@ -148,7 +150,13 @@ impl KiroProvider {
             endpoints,
             default_endpoint,
             profile_resolution_attempted: Mutex::new(HashSet::new()),
+            rpm_tracker: None,
         }
+    }
+
+    pub fn with_rpm_tracker(mut self, tracker: Arc<RpmTracker>) -> Self {
+        self.rpm_tracker = Some(tracker);
+        self
     }
 
     /// 根据凭据的代理配置获取（或创建并缓存）对应的 reqwest::Client
@@ -264,7 +272,11 @@ impl KiroProvider {
 
         for attempt in 0..max_retries {
             // MCP 调用（WebSearch 等工具）不涉及模型选择，也不参与分组隔离
-            let ctx = match self.token_manager.acquire_context(None, None).await {
+            let ctx = match self
+                .token_manager
+                .acquire_context_with_rpm(None, None, self.rpm_tracker.as_deref())
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     last_error = Some(e);
@@ -432,7 +444,11 @@ impl KiroProvider {
         for attempt in 0..max_retries {
             let attempt_start = Instant::now();
             // 获取调用上下文（绑定 index、credentials、token）
-            let mut ctx = match self.token_manager.acquire_context(model.as_deref(), group).await {
+            let mut ctx = match self
+                .token_manager
+                .acquire_context_with_rpm(model.as_deref(), group, self.rpm_tracker.as_deref())
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     Self::emit_attempt(

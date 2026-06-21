@@ -82,6 +82,11 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "is_zero")]
     pub priority: u32,
 
+    /// Per-credential request-per-minute limit. 0 or omitted means unlimited.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpm_limit: Option<u32>,
+
     /// 凭据级 Region 配置（用于 OIDC token 刷新）
     /// 未配置时回退到 config.json 的全局 region
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -189,6 +194,7 @@ impl std::fmt::Debug for KiroCredentials {
             .field("issuer_url", &self.issuer_url)
             .field("scopes", &self.scopes)
             .field("priority", &self.priority)
+            .field("rpm_limit", &self.rpm_limit)
             .field("region", &self.region)
             .field("auth_region", &self.auth_region)
             .field("api_region", &self.api_region)
@@ -511,6 +517,7 @@ mod tests {
             issuer_url: None,
             scopes: None,
             priority: 0,
+            rpm_limit: None,
             region: None,
             auth_region: None,
             api_region: None,
@@ -748,6 +755,7 @@ mod tests {
             issuer_url: None,
             scopes: None,
             priority: 0,
+            rpm_limit: None,
             region: Some("eu-west-1".to_string()),
             auth_region: None,
             api_region: None,
@@ -786,6 +794,7 @@ mod tests {
             issuer_url: None,
             scopes: None,
             priority: 0,
+            rpm_limit: None,
             region: None,
             auth_region: None,
             api_region: None,
@@ -907,6 +916,7 @@ mod tests {
             issuer_url: None,
             scopes: None,
             priority: 3,
+            rpm_limit: None,
             region: Some("us-west-2".to_string()),
             auth_region: None,
             api_region: None,

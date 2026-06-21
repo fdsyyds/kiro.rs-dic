@@ -28,6 +28,7 @@ use crate::kiro::model::token_refresh::{
 };
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
+use crate::model::rpm::RpmTracker;
 
 /// 检查 Token 是否在指定时间内过期
 pub(crate) fn is_token_expiring_within(
@@ -912,6 +913,9 @@ pub struct CredentialEntrySnapshot {
     pub id: u64,
     /// 优先级
     pub priority: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpm_limit: Option<u32>,
+    pub current_rpm: u64,
     /// 是否被禁用
     pub disabled: bool,
     /// 连续失败次数
@@ -962,6 +966,57 @@ pub struct CredentialEntrySnapshot {
     pub source_channel: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolStatusSnapshot {
+    pub idle: Vec<PoolIdleEntry>,
+    pub busy: Vec<PoolBusyEntry>,
+    pub rpm_full: Vec<PoolRpmFullEntry>,
+    pub disabled: Vec<PoolDisabledEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolIdleEntry {
+    pub id: u64,
+    pub priority: u32,
+    pub email: Option<String>,
+    pub current_rpm: u64,
+    pub rpm_limit: Option<u32>,
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolBusyEntry {
+    pub id: u64,
+    pub priority: u32,
+    pub email: Option<String>,
+    pub remaining_secs: u64,
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolRpmFullEntry {
+    pub id: u64,
+    pub priority: u32,
+    pub email: Option<String>,
+    pub current_rpm: u64,
+    pub rpm_limit: u32,
+    pub groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoolDisabledEntry {
+    pub id: u64,
+    pub priority: u32,
+    pub email: Option<String>,
+    pub reason: Option<String>,
+    pub groups: Vec<String>,
+}
+
 /// 凭据管理器状态快照
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1006,6 +1061,7 @@ pub struct MultiTokenManager {
     account_throttle_failover: AtomicBool,
     /// 账号级风控冷却时长（秒，运行时可修改）
     account_throttle_cooldown_secs: AtomicU64,
+    rr_counter: AtomicU64,
     /// 最近一次统计持久化时间（用于 debounce）
     last_stats_save_at: Mutex<Option<Instant>>,
     /// 统计数据是否有未落盘更新
@@ -1056,6 +1112,17 @@ fn credential_matches_request(
     }
 
     group_matches(&credentials.groups, group)
+}
+
+fn credential_within_rpm_limit(
+    id: u64,
+    credentials: &KiroCredentials,
+    rpm_tracker: Option<&RpmTracker>,
+) -> bool {
+    match (credentials.rpm_limit, rpm_tracker) {
+        (Some(limit), Some(tracker)) if limit > 0 => tracker.get_credential_rpm(id) < limit as u64,
+        _ => true,
+    }
 }
 
 impl MultiTokenManager {
@@ -1175,6 +1242,7 @@ impl MultiTokenManager {
             load_balancing_mode: Mutex::new(load_balancing_mode),
             account_throttle_failover: AtomicBool::new(throttle_failover),
             account_throttle_cooldown_secs: AtomicU64::new(throttle_cooldown_secs),
+            rr_counter: AtomicU64::new(0),
             last_stats_save_at: Mutex::new(None),
             stats_dirty: AtomicBool::new(false),
         };
@@ -1258,7 +1326,12 @@ impl MultiTokenManager {
     ///
     /// # 参数
     /// - `model`: 可选的模型名称，用于过滤支持该模型的凭据（如 opus 模型需要付费订阅）
-    fn select_next_credential(&self, model: Option<&str>, group: Option<&str>) -> Option<(u64, KiroCredentials)> {
+    fn select_next_credential_with_rpm(
+        &self,
+        model: Option<&str>,
+        group: Option<&str>,
+        rpm_tracker: Option<&RpmTracker>,
+    ) -> Option<(u64, KiroCredentials)> {
         let entries = self.entries.lock();
         let now = Instant::now();
 
@@ -1277,6 +1350,9 @@ impl MultiTokenManager {
                 if !credential_matches_request(&e.credentials, model, group) {
                     return false;
                 }
+                if !credential_within_rpm_limit(e.id, &e.credentials, rpm_tracker) {
+                    return false;
+                }
                 true
             })
             .collect();
@@ -1292,9 +1368,8 @@ impl MultiTokenManager {
             "balanced" => {
                 // Least-Used 策略：选择成功次数最少的凭据
                 // 平局时按优先级排序（数字越小优先级越高）
-                let entry = available
-                    .iter()
-                    .min_by_key(|e| (e.success_count, e.credentials.priority))?;
+                let idx = self.rr_counter.fetch_add(1, Ordering::Relaxed) as usize;
+                let entry = &available[idx % available.len()];
 
                 Some((entry.id, entry.credentials.clone()))
             }
@@ -1304,6 +1379,14 @@ impl MultiTokenManager {
                 Some((entry.id, entry.credentials.clone()))
             }
         }
+    }
+
+    fn select_next_credential(
+        &self,
+        model: Option<&str>,
+        group: Option<&str>,
+    ) -> Option<(u64, KiroCredentials)> {
+        self.select_next_credential_with_rpm(model, group, None)
     }
 
     /// 获取 API 调用上下文
@@ -1316,7 +1399,12 @@ impl MultiTokenManager {
     ///
     /// # 参数
     /// - `model`: 可选的模型名称，用于过滤支持该模型的凭据（如 opus 模型需要付费订阅）
-    pub async fn acquire_context(&self, model: Option<&str>, group: Option<&str>) -> anyhow::Result<CallContext> {
+    pub async fn acquire_context_with_rpm(
+        &self,
+        model: Option<&str>,
+        group: Option<&str>,
+        rpm_tracker: Option<&RpmTracker>,
+    ) -> anyhow::Result<CallContext> {
         let total = self.total_count_in_group(group);
         let max_attempts = (total * MAX_FAILURES_PER_CREDENTIAL as usize).max(1);
         let mut attempt_count = 0;
@@ -1348,6 +1436,7 @@ impl MultiTokenManager {
                                 && !e.disabled
                                 && !e.throttled_until.map(|t| t > now).unwrap_or(false)
                                 && credential_matches_request(&e.credentials, model, group)
+                                && credential_within_rpm_limit(e.id, &e.credentials, rpm_tracker)
                         })
                         .map(|e| (e.id, e.credentials.clone()))
                 };
@@ -1356,7 +1445,7 @@ impl MultiTokenManager {
                     hit
                 } else {
                     // 当前凭据不可用或 balanced 模式，根据负载均衡策略选择
-                    let mut best = self.select_next_credential(model, group);
+                    let mut best = self.select_next_credential_with_rpm(model, group, rpm_tracker);
 
                     // 没有可用凭据：如果是"自动禁用导致全灭"，做一次类似重启的自愈
                     if best.is_none() {
@@ -1375,7 +1464,7 @@ impl MultiTokenManager {
                                 }
                             }
                             drop(entries);
-                            best = self.select_next_credential(model, group);
+                            best = self.select_next_credential_with_rpm(model, group, rpm_tracker);
                         }
                     }
 
@@ -1396,6 +1485,10 @@ impl MultiTokenManager {
             };
 
             // 尝试获取/刷新 Token
+            if let Some(rpm) = rpm_tracker {
+                rpm.record_credential(id);
+            }
+
             match self.try_ensure_token(id, &credentials).await {
                 Ok(ctx) => {
                     return Ok(ctx);
@@ -1425,6 +1518,14 @@ impl MultiTokenManager {
     /// 选择优先级最高的未禁用凭据作为当前凭据（内部方法）
     ///
     /// 纯粹按优先级选择，不排除当前凭据，用于优先级变更后立即生效
+    pub async fn acquire_context(
+        &self,
+        model: Option<&str>,
+        group: Option<&str>,
+    ) -> anyhow::Result<CallContext> {
+        self.acquire_context_with_rpm(model, group, None).await
+    }
+
     fn select_highest_priority(&self) {
         let entries = self.entries.lock();
         let mut current_id = self.current_id.lock();
@@ -2111,7 +2212,7 @@ impl MultiTokenManager {
     }
 
     /// 获取管理器状态快照（用于 Admin API）
-    pub fn snapshot(&self) -> ManagerSnapshot {
+    pub fn snapshot_with_rpm(&self, rpm_tracker: Option<&RpmTracker>) -> ManagerSnapshot {
         let entries = self.entries.lock();
         let current_id = *self.current_id.lock();
         let now = Instant::now();
@@ -2126,6 +2227,10 @@ impl MultiTokenManager {
                 .map(|e| CredentialEntrySnapshot {
                     id: e.id,
                     priority: e.credentials.priority,
+                    rpm_limit: e.credentials.rpm_limit,
+                    current_rpm: rpm_tracker
+                        .map(|tracker| tracker.get_credential_rpm(e.id))
+                        .unwrap_or(0),
                     disabled: e.disabled,
                     failure_count: e.failure_count,
                     total_failure_count: e.total_failure_count,
@@ -2197,6 +2302,81 @@ impl MultiTokenManager {
             current_id,
             total: entries.len(),
             available,
+        }
+    }
+
+    pub fn snapshot(&self) -> ManagerSnapshot {
+        self.snapshot_with_rpm(None)
+    }
+
+    pub fn pool_status(&self, rpm_tracker: Option<&RpmTracker>) -> PoolStatusSnapshot {
+        let entries = self.entries.lock();
+        let now = Instant::now();
+        let mut idle = Vec::new();
+        let mut busy = Vec::new();
+        let mut rpm_full = Vec::new();
+        let mut disabled = Vec::new();
+
+        for e in entries.iter() {
+            let current_rpm = rpm_tracker
+                .map(|tracker| tracker.get_credential_rpm(e.id))
+                .unwrap_or(0);
+            if e.disabled {
+                disabled.push(PoolDisabledEntry {
+                    id: e.id,
+                    priority: e.credentials.priority,
+                    email: e.credentials.email.clone(),
+                    reason: e.disabled_reason.map(|r| format!("{:?}", r)),
+                    groups: e.credentials.groups.clone(),
+                });
+                continue;
+            }
+
+            if let Some(remaining) = e
+                .throttled_until
+                .and_then(|t| t.checked_duration_since(now))
+                .map(|d| d.as_secs())
+                .filter(|s| *s > 0)
+            {
+                busy.push(PoolBusyEntry {
+                    id: e.id,
+                    priority: e.credentials.priority,
+                    email: e.credentials.email.clone(),
+                    remaining_secs: remaining,
+                    groups: e.credentials.groups.clone(),
+                });
+                continue;
+            }
+
+            if let Some(limit) = e.credentials.rpm_limit.filter(|v| *v > 0) {
+                if current_rpm >= limit as u64 {
+                    rpm_full.push(PoolRpmFullEntry {
+                        id: e.id,
+                        priority: e.credentials.priority,
+                        email: e.credentials.email.clone(),
+                        current_rpm,
+                        rpm_limit: limit,
+                        groups: e.credentials.groups.clone(),
+                    });
+                    continue;
+                }
+            }
+
+            idle.push(PoolIdleEntry {
+                id: e.id,
+                priority: e.credentials.priority,
+                email: e.credentials.email.clone(),
+                current_rpm,
+                rpm_limit: e.credentials.rpm_limit,
+                groups: e.credentials.groups.clone(),
+            });
+        }
+
+        PoolStatusSnapshot {
+            idle,
+            busy,
+            rpm_full,
+            disabled,
         }
     }
 
@@ -2940,6 +3120,7 @@ impl MultiTokenManager {
         proxy_username: Option<Option<String>>,
         proxy_password: Option<Option<String>>,
         groups: Option<Vec<String>>,
+        rpm_limit: Option<u32>,
         source_channel: Option<Option<String>>,
     ) -> anyhow::Result<()> {
         {
@@ -2964,6 +3145,9 @@ impl MultiTokenManager {
             if let Some(g) = groups {
                 entry.credentials.groups =
                     g.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            }
+            if let Some(limit) = rpm_limit {
+                entry.credentials.rpm_limit = if limit == 0 { None } else { Some(limit) };
             }
             if let Some(v) = source_channel {
                 entry.credentials.source_channel =

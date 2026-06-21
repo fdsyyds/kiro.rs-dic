@@ -94,6 +94,7 @@ import {
   useSetLoadBalancingMode,
   useResetAllSuccessCount,
   useSetPriority,
+  usePoolStatus,
 } from "@/hooks/use-credentials";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useFailureStats } from "@/hooks/use-traces";
@@ -237,6 +238,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
   const { mutate: resetFailure } = useResetFailure();
   const { data: loadBalancingData, isLoading: isLoadingMode } =
     useLoadBalancingMode();
+  const { data: poolStatus } = usePoolStatus();
   const { mutate: setLoadBalancingMode, isPending: isSettingMode } =
     useSetLoadBalancingMode();
   const resetAllSuccess = useResetAllSuccessCount();
@@ -1235,7 +1237,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
         </div>
 
         {/* 统计卡片 */}
-        <div className="mb-5 grid grid-cols-3 gap-2 sm:mb-6 sm:gap-4">
+        <div className="mb-5 grid grid-cols-2 gap-2 sm:mb-6 sm:grid-cols-4 sm:gap-4">
           <Card className="hover:shadow-apple-lg hover:-translate-y-0.5">
             <CardContent className="p-3 sm:p-5">
               <div className="text-[11px] font-medium text-muted-foreground sm:text-[13px]">
@@ -1266,6 +1268,27 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                   #{data?.currentId || "-"}
                 </span>
                 {data?.currentId && <Badge variant="success">活跃</Badge>}
+              </div>
+            </CardContent>
+          </Card>
+          <Card className="hover:shadow-apple-lg hover:-translate-y-0.5">
+            <CardContent className="p-3 sm:p-5">
+              <div className="text-[11px] font-medium text-muted-foreground sm:text-[13px]">
+                Pool
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs tabular-nums">
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  idle {poolStatus?.idle.length ?? 0}
+                </span>
+                <span className="text-sky-600 dark:text-sky-400">
+                  busy {poolStatus?.busy.length ?? 0}
+                </span>
+                <span className="text-amber-600 dark:text-amber-400">
+                  rpm {poolStatus?.rpmFull.length ?? 0}
+                </span>
+                <span className="text-muted-foreground">
+                  off {poolStatus?.disabled.length ?? 0}
+                </span>
               </div>
             </CardContent>
           </Card>

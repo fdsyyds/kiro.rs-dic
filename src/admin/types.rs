@@ -27,6 +27,9 @@ pub struct CredentialStatusItem {
     pub id: u64,
     /// 优先级（数字越小优先级越高）
     pub priority: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rpm_limit: Option<u32>,
+    pub current_rpm: u64,
     /// 是否被禁用
     pub disabled: bool,
     /// 连续失败次数
@@ -152,6 +155,8 @@ pub struct AddCredentialRequest {
     /// 优先级（可选，默认 0）
     #[serde(default)]
     pub priority: u32,
+    #[serde(default)]
+    pub rpm_limit: Option<u32>,
 
     /// 凭据级 Region 配置（用于 OIDC token 刷新）
     /// 未配置时回退到 config.json 的全局 region
@@ -229,6 +234,8 @@ pub struct UpdateCredentialRequest {
     /// 账号所属分组（None 表示不修改，Some 表示整体替换）
     #[serde(default)]
     pub groups: Option<Vec<String>>,
+    #[serde(default)]
+    pub rpm_limit: Option<u32>,
     /// 账号来源渠道（None 表示不修改，空串表示清除）
     #[serde(default)]
     pub source_channel: Option<String>,

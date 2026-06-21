@@ -507,6 +507,14 @@ pub async fn assign_proxies_round_robin(
 
 /// GET /api/admin/config/load-balancing
 /// 获取负载均衡模式
+pub async fn get_pool_status(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_pool_status())
+}
+
+pub async fn get_rpm(State(state): State<AdminState>) -> impl IntoResponse {
+    Json(state.service.get_rpm())
+}
+
 pub async fn get_load_balancing_mode(State(state): State<AdminState>) -> impl IntoResponse {
     let response = state.service.get_load_balancing_mode();
     Json(response)

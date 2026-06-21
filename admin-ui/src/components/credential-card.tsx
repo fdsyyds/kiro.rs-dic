@@ -414,6 +414,22 @@ export function CredentialCard({
         </Badge>
       )}
       {credential.authMethod && <Badge variant="secondary">{authLabel}</Badge>}
+      {credential.rpmLimit ? (
+        <Badge
+          variant={
+            (credential.currentRpm ?? 0) >= credential.rpmLimit
+              ? "warning"
+              : "outline"
+          }
+          title="Requests per minute for this account"
+        >
+          RPM {credential.currentRpm ?? 0}/{credential.rpmLimit}
+        </Badge>
+      ) : (
+        <Badge variant="outline" title="No per-account RPM limit">
+          RPM {credential.currentRpm ?? 0}/unlimited
+        </Badge>
+      )}
       {/* 配置元信息合并为单个徽章，减少换行：endpoint · ARN */}
       {(credential.endpoint || credential.hasProfileArn) && (
         <Badge
@@ -958,6 +974,20 @@ export function CredentialCard({
                   {credential.successCount}
                   <RotateCcw className="h-3 w-3 opacity-70" />
                 </button>
+              </dd>
+            </div>
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <dt className="shrink-0 text-muted-foreground">RPM</dt>
+              <dd
+                className={`tabular-nums font-medium ${
+                  credential.rpmLimit &&
+                  (credential.currentRpm ?? 0) >= credential.rpmLimit
+                    ? "text-amber-600 dark:text-amber-400"
+                    : ""
+                }`}
+              >
+                {credential.currentRpm ?? 0}/
+                {credential.rpmLimit ? credential.rpmLimit : "unlimited"}
               </dd>
             </div>
             <div className="flex min-w-0 items-center justify-between gap-2 border-t border-border/50 pt-2 min-[420px]:col-span-2">

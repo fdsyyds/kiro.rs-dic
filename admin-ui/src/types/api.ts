@@ -10,6 +10,8 @@ export interface CredentialsStatusResponse {
 export interface CredentialStatusItem {
   id: number
   priority: number
+  rpmLimit?: number
+  currentRpm?: number
   disabled: boolean
   failureCount: number
   /** 累计失败次数（所有失败类型，只增不减，仅手动重置归零） */
@@ -111,6 +113,7 @@ export interface AddCredentialRequest {
   issuerUrl?: string
   scopes?: string
   priority?: number
+  rpmLimit?: number
   authRegion?: string
   apiRegion?: string
   machineId?: string
@@ -121,6 +124,7 @@ export interface AddCredentialRequest {
   endpoint?: string
   email?: string
   groups?: string[]
+  rpmLimit?: number
   sourceChannel?: string
 }
 
@@ -140,11 +144,49 @@ export interface UpdateCredentialRequest {
   proxyPassword?: string
   /** 账号所属分组（undefined 表示不修改，数组表示整体替换） */
   groups?: string[]
+  rpmLimit?: number
   /** 账号来源渠道（undefined 表示不修改，空串表示清除） */
   sourceChannel?: string
 }
 
 // 更新 refreshToken 请求
+export interface PoolEntryBase {
+  id: number
+  priority: number
+  email?: string | null
+  groups: string[]
+}
+
+export interface PoolIdleEntry extends PoolEntryBase {
+  currentRpm: number
+  rpmLimit?: number | null
+}
+
+export interface PoolBusyEntry extends PoolEntryBase {
+  remainingSecs: number
+}
+
+export interface PoolRpmFullEntry extends PoolEntryBase {
+  currentRpm: number
+  rpmLimit: number
+}
+
+export interface PoolDisabledEntry extends PoolEntryBase {
+  reason?: string | null
+}
+
+export interface PoolStatusResponse {
+  idle: PoolIdleEntry[]
+  busy: PoolBusyEntry[]
+  rpmFull: PoolRpmFullEntry[]
+  disabled: PoolDisabledEntry[]
+}
+
+export interface RpmResponse {
+  global: number
+  byCredential: Record<string, number>
+}
+
 export interface UpdateRefreshTokenRequest {
   refreshToken: string
   accessToken?: string

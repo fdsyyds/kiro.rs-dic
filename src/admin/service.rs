@@ -15,6 +15,7 @@ use crate::kiro::auth::social;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::token_manager::MultiTokenManager;
 use crate::model::config::Config;
+use crate::model::rpm::{RpmSnapshot, RpmTracker};
 
 use super::error::AdminServiceError;
 use super::proxy_pool::{GetUrlResult, ProxyPoolManager};
@@ -166,6 +167,7 @@ pub struct AdminService {
     trace_store: Option<crate::admin::trace_db::SharedTraceStore>,
     /// 用量日志记录器（用于日志治理：保留天数运行时可改）
     usage_recorder: Option<crate::admin::usage_stats::SharedRecorder>,
+    rpm_tracker: Option<Arc<RpmTracker>>,
 }
 
 /// Social 登录会话状态
@@ -501,6 +503,7 @@ impl AdminService {
             social_sessions: Arc::new(Mutex::new(HashMap::new())),
             trace_store: None,
             usage_recorder: None,
+            rpm_tracker: None,
         };
 
         // 后台任务：每 5 分钟清理过期的登录会话，防止内存泄漏
@@ -537,9 +540,25 @@ impl AdminService {
         self
     }
 
+    pub fn with_rpm_tracker(mut self, rpm_tracker: Arc<RpmTracker>) -> Self {
+        self.rpm_tracker = Some(rpm_tracker);
+        self
+    }
+
+    pub fn get_rpm(&self) -> Option<RpmSnapshot> {
+        self.rpm_tracker.as_ref().map(|tracker| tracker.snapshot())
+    }
+
+    pub fn get_pool_status(&self) -> crate::kiro::token_manager::PoolStatusSnapshot {
+        self.token_manager
+            .pool_status(self.rpm_tracker.as_deref())
+    }
+
     /// 获取所有凭据状态
     pub fn get_all_credentials(&self) -> CredentialsStatusResponse {
-        let snapshot = self.token_manager.snapshot();
+        let snapshot = self
+            .token_manager
+            .snapshot_with_rpm(self.rpm_tracker.as_deref());
         let default_endpoint = self.token_manager.config().default_endpoint.clone();
 
         // 一次性快照余额缓存，避免 N 次加锁
@@ -562,6 +581,8 @@ impl AdminService {
                 CredentialStatusItem {
                     id: entry.id,
                     priority: entry.priority,
+                    rpm_limit: entry.rpm_limit,
+                    current_rpm: entry.current_rpm,
                     disabled: entry.disabled,
                     failure_count: entry.failure_count,
                     total_failure_count: entry.total_failure_count,
@@ -1060,6 +1081,7 @@ impl AdminService {
             issuer_url: req.issuer_url,
             scopes: req.scopes,
             priority: req.priority,
+            rpm_limit: req.rpm_limit.filter(|v| *v > 0),
             region: req.region,
             auth_region: req.auth_region,
             api_region: req.api_region,
@@ -1197,6 +1219,7 @@ impl AdminService {
                 req.proxy_password
                     .map(|v| if v.is_empty() { None } else { Some(v) }),
                 req.groups,
+                req.rpm_limit,
                 req.source_channel
                     .map(|v| if v.is_empty() { None } else { Some(v) }),
             )
@@ -2297,6 +2320,7 @@ impl AdminService {
                 None,            // proxy_username 不修改
                 None,            // proxy_password 不修改
                 None,            // groups 不修改
+                None,            // rpm_limit 不修改
                 None,            // source_channel 不修改
             )
             .map_err(|e| {
@@ -2367,7 +2391,7 @@ impl AdminService {
             let url = urls[i % urls.len()].clone();
             if self
                 .token_manager
-                .update_credential(*cred_id, None, Some(Some(url)), None, None, None, None)
+                .update_credential(*cred_id, None, Some(Some(url)), None, None, None, None, None)
                 .is_ok()
             {
                 assigned += 1;
