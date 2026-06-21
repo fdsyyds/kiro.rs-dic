@@ -124,7 +124,6 @@ export interface AddCredentialRequest {
   endpoint?: string
   email?: string
   groups?: string[]
-  rpmLimit?: number
   sourceChannel?: string
 }
 
