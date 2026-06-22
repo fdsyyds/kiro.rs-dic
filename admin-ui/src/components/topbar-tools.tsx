@@ -20,6 +20,7 @@ import {
   useLoadBalancingMode, useSetLoadBalancingMode,
   useAccountThrottleConfig, useSetAccountThrottleConfig,
 } from '@/hooks/use-credentials'
+import type { LoadBalancingMode } from '@/api/credentials'
 import { useUpdateCheck } from '@/hooks/use-update-check'
 import { updateAdminKey } from '@/api/credentials'
 import { extractErrorMessage, generateApiKey } from '@/lib/utils'
@@ -117,7 +118,7 @@ export function TopbarTools({ compact = false }: TopbarToolsProps) {
     updateCooldown: (secs: number) =>
       setThrottleConfig({ cooldownSecs: secs }, {
         onSuccess: () =>
-          toast.success(`冷却时长已设为 ${Math.round(secs / 60)} 分钟`),
+          toast.success(`冷却时长已设为 ${formatCooldown(secs)}`),
         onError: (err) => toast.error(`保存失败: ${extractErrorMessage(err)}`),
       }),
   }
@@ -229,7 +230,7 @@ interface ToolControls {
   isLoadingThrottle: boolean
   isSettingMode: boolean
   isSettingThrottle: boolean
-  loadBalancingMode?: 'priority' | 'balanced'
+  loadBalancingMode?: LoadBalancingMode
   openImageUpdate: () => void
   openKeyDialog: () => void
   throttleConfig?: { failover: boolean; cooldownSecs: number }
@@ -387,14 +388,15 @@ interface ThrottleConfigButtonProps {
 interface ThrottleState {
   cooldownMin: number
   cooldownSecs: number
+  cooldownLabel: string
   failover: boolean
 }
 
 interface CustomCooldownFormProps {
-  cooldownMin: number
-  customMin: string
+  cooldownLabel: string
+  customSecs: string
   disabled: boolean
-  onCustomMinChange: (value: string) => void
+  onCustomSecsChange: (value: string) => void
   onSubmit: (e: React.FormEvent) => void
 }
 
@@ -414,35 +416,35 @@ const COOLDOWN_PRESETS = [
 
 const DEFAULT_COOLDOWN_SECS = 30 * 60
 const SECONDS_PER_MINUTE = 60
-const MIN_CUSTOM_COOLDOWN_MINUTES = 1
-const MAX_CUSTOM_COOLDOWN_MINUTES = 1440
+const MIN_CUSTOM_COOLDOWN_SECS = 1
+const MAX_CUSTOM_COOLDOWN_SECS = 86400
 
 /**
  * 故障转移开关 + 冷却时长设置（紧凑下拉）
  *
  * 主按钮文案显示当前状态；下拉里:
  * - 顶部一个 Switch 切换 failover
- * - 5 个预设时长 + 一个自定义输入（分钟）
+ * - 5 个预设时长 + 一个自定义输入（秒）
  */
 function ThrottleConfigButton({
   config, loading, saving, onToggleFailover, onChangeCooldown,
 }: ThrottleConfigButtonProps) {
   const [open, setOpen] = useState(false)
-  const [customMin, setCustomMin] = useState('')
+  const [customSecs, setCustomSecs] = useState('')
   const state = readThrottleState(config)
 
   useEffect(() => {
-    if (!open) setCustomMin('')
+    if (!open) setCustomSecs('')
   }, [open])
 
   const submitCustom = (e: React.FormEvent) => {
     e.preventDefault()
-    const min = parseInt(customMin, 10)
-    if (invalidCooldownMinutes(min)) {
-      toast.error('请输入 1-1440 之间的分钟数')
+    const secs = parseInt(customSecs, 10)
+    if (invalidCooldownSeconds(secs)) {
+      toast.error('请输入 1-86400 之间的秒数')
       return
     }
-    onChangeCooldown(min * SECONDS_PER_MINUTE)
+    onChangeCooldown(secs)
     setOpen(false)
   }
 
@@ -458,11 +460,11 @@ function ThrottleConfigButton({
           onToggleFailover={onToggleFailover}
         />
         <ThrottleCooldownPanel
-          customMin={customMin}
+          customSecs={customSecs}
           saving={saving}
           state={state}
           onChangeCooldown={onChangeCooldown}
-          onCustomMinChange={setCustomMin}
+          onCustomSecsChange={setCustomSecs}
           onDone={() => setOpen(false)}
           onSubmitCustom={submitCustom}
         />
@@ -535,13 +537,13 @@ function ThrottleStatusText({ failover }: { failover: boolean }) {
 }
 
 function ThrottleCooldownPanel({
-  customMin, saving, state, onChangeCooldown, onCustomMinChange, onDone, onSubmitCustom,
+  customSecs, saving, state, onChangeCooldown, onCustomSecsChange, onDone, onSubmitCustom,
 }: {
-  customMin: string
+  customSecs: string
   saving: boolean
   state: ThrottleState
   onChangeCooldown: (secs: number) => void
-  onCustomMinChange: (value: string) => void
+  onCustomSecsChange: (value: string) => void
   onDone?: () => void
   onSubmitCustom: (e: React.FormEvent) => void
 }) {
@@ -558,10 +560,10 @@ function ThrottleCooldownPanel({
           onDone={onDone}
         />
         <CustomCooldownForm
-          cooldownMin={state.cooldownMin}
-          customMin={customMin}
+          cooldownLabel={state.cooldownLabel}
+          customSecs={customSecs}
           disabled={disabled}
-          onCustomMinChange={onCustomMinChange}
+          onCustomSecsChange={onCustomSecsChange}
           onSubmit={onSubmitCustom}
         />
       </div>
@@ -570,27 +572,28 @@ function ThrottleCooldownPanel({
 }
 
 function CustomCooldownForm({
-  cooldownMin, customMin, disabled, onCustomMinChange, onSubmit,
+  cooldownLabel, customSecs, disabled, onCustomSecsChange, onSubmit,
 }: CustomCooldownFormProps) {
   return (
     <form onSubmit={onSubmit} className="mt-2 flex items-center gap-1.5">
       <Input
         type="number"
-        min={MIN_CUSTOM_COOLDOWN_MINUTES}
-        max={MAX_CUSTOM_COOLDOWN_MINUTES}
-        placeholder={`自定义（当前 ${cooldownMin}）`}
-        value={customMin}
-        onChange={(e) => onCustomMinChange(e.target.value)}
+        min={MIN_CUSTOM_COOLDOWN_SECS}
+        max={MAX_CUSTOM_COOLDOWN_SECS}
+        step={1}
+        placeholder={`自定义（当前 ${cooldownLabel}）`}
+        value={customSecs}
+        onChange={(e) => onCustomSecsChange(e.target.value)}
         disabled={disabled}
         className="h-7 text-xs"
       />
-      <span className="text-xs text-muted-foreground">分钟</span>
+      <span className="text-xs text-muted-foreground">秒</span>
       <Button
         type="submit"
         size="sm"
         variant="outline"
         className="h-7 text-xs"
-        disabled={disabled || !customMin.trim()}
+        disabled={disabled || !customSecs.trim()}
       >
         保存
       </Button>
@@ -600,19 +603,19 @@ function CustomCooldownForm({
 
 function ThrottleCompactItems(props: ThrottleConfigButtonProps) {
   const { loading, saving, onToggleFailover, onChangeCooldown } = props
-  const [customMin, setCustomMin] = useState('')
+  const [customSecs, setCustomSecs] = useState('')
   const state = readThrottleState(props.config)
   const busy = loading || saving
 
   const submitCustom = (e: React.FormEvent) => {
     e.preventDefault()
-    const min = parseInt(customMin, 10)
-    if (invalidCooldownMinutes(min)) {
-      toast.error('请输入 1-1440 之间的分钟数')
+    const secs = parseInt(customSecs, 10)
+    if (invalidCooldownSeconds(secs)) {
+      toast.error('请输入 1-86400 之间的秒数')
       return
     }
-    onChangeCooldown(min * SECONDS_PER_MINUTE)
-    setCustomMin('')
+    onChangeCooldown(secs)
+    setCustomSecs('')
   }
 
   return (
@@ -626,11 +629,11 @@ function ThrottleCompactItems(props: ThrottleConfigButtonProps) {
         {compactThrottleText(loading, state)}
       </DropdownMenuItem>
       <ThrottleCooldownPanel
-        customMin={customMin}
+        customSecs={customSecs}
         saving={busy}
         state={state}
         onChangeCooldown={onChangeCooldown}
-        onCustomMinChange={setCustomMin}
+        onCustomSecsChange={setCustomSecs}
         onSubmitCustom={submitCustom}
       />
     </>
@@ -693,6 +696,14 @@ function secondsToMinutes(seconds: number) {
   return Math.round(seconds / SECONDS_PER_MINUTE)
 }
 
+function formatCooldown(seconds: number) {
+  if (seconds < SECONDS_PER_MINUTE) return `${seconds}s`
+  if (seconds < 60 * SECONDS_PER_MINUTE) return `${secondsToMinutes(seconds)}m`
+  const hours = Math.floor(seconds / (60 * SECONDS_PER_MINUTE))
+  const minutes = Math.round((seconds % (60 * SECONDS_PER_MINUTE)) / SECONDS_PER_MINUTE)
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+}
+
 function readThrottleState(
   config: ThrottleConfigButtonProps['config'],
 ): ThrottleState {
@@ -700,6 +711,7 @@ function readThrottleState(
   return {
     cooldownMin: secondsToMinutes(cooldownSecs),
     cooldownSecs,
+    cooldownLabel: formatCooldown(cooldownSecs),
     failover: config?.failover ?? true,
   }
 }
@@ -707,26 +719,26 @@ function readThrottleState(
 function throttleTitle(loading: boolean, state: ThrottleState) {
   if (loading) return '加载中…'
   if (!state.failover) return '账号级风控故障转移：关闭'
-  return `账号级风控故障转移：开启（冷却 ${state.cooldownMin} 分钟）`
+  return `账号级风控故障转移：开启（冷却 ${state.cooldownLabel}）`
 }
 
 function throttleTriggerText(loading: boolean, state: ThrottleState) {
   if (loading) return '加载中…'
   if (!state.failover) return '不切换'
-  return `故障转移 · ${state.cooldownMin}m`
+  return `故障转移 · ${state.cooldownLabel}`
 }
 
 function compactThrottleText(loading: boolean, state: ThrottleState) {
   if (loading) return '故障转移加载中'
   if (!state.failover) return '开启故障转移'
-  return `关闭故障转移 · ${state.cooldownMin}m`
+  return `关闭故障转移 · ${state.cooldownLabel}`
 }
 
-function invalidCooldownMinutes(minutes: number) {
+function invalidCooldownSeconds(seconds: number) {
   return (
-    Number.isNaN(minutes) ||
-    minutes < MIN_CUSTOM_COOLDOWN_MINUTES ||
-    minutes > MAX_CUSTOM_COOLDOWN_MINUTES
+    Number.isNaN(seconds) ||
+    seconds < MIN_CUSTOM_COOLDOWN_SECS ||
+    seconds > MAX_CUSTOM_COOLDOWN_SECS
   )
 }
 

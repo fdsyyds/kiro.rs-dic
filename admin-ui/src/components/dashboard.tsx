@@ -95,6 +95,7 @@ import {
   useResetAllSuccessCount,
   useSetPriority,
   usePoolStatus,
+  useRpm,
 } from "@/hooks/use-credentials";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useFailureStats } from "@/hooks/use-traces";
@@ -239,6 +240,7 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
   const { data: loadBalancingData, isLoading: isLoadingMode } =
     useLoadBalancingMode();
   const { data: poolStatus } = usePoolStatus();
+  const { data: rpmStatus } = useRpm();
   const { mutate: setLoadBalancingMode, isPending: isSettingMode } =
     useSetLoadBalancingMode();
   const resetAllSuccess = useResetAllSuccessCount();
@@ -1271,12 +1273,28 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
               </div>
             </CardContent>
           </Card>
-          <Card className="hover:shadow-apple-lg hover:-translate-y-0.5">
+          <Card
+            role="button"
+            tabIndex={0}
+            className="cursor-pointer hover:shadow-apple-lg hover:-translate-y-0.5"
+            onClick={() => {
+              window.location.hash = "#/pool";
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                window.location.hash = "#/pool";
+              }
+            }}
+          >
             <CardContent className="p-3 sm:p-5">
               <div className="text-[11px] font-medium text-muted-foreground sm:text-[13px]">
                 Pool
               </div>
               <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs tabular-nums">
+                <span className="font-medium text-primary">
+                  total {rpmStatus?.global ?? 0}
+                </span>
                 <span className="text-emerald-600 dark:text-emerald-400">
                   idle {poolStatus?.idle.length ?? 0}
                 </span>

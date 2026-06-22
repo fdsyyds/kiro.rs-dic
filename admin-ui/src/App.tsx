@@ -4,7 +4,7 @@ import { LoginPage } from "@/components/login-page";
 import { Toaster } from "@/components/ui/sonner";
 import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
-import { Activity, KeyRound, Server, LogOut, Moon, Sun, ScrollText, FolderTree } from "lucide-react";
+import { Activity, KeyRound, Server, LogOut, Moon, Sun, ScrollText, FolderTree, Gauge } from "lucide-react";
 import { TopbarTools } from "@/components/topbar-tools";
 
 function GithubIcon({ className }: { className?: string }) {
@@ -43,8 +43,13 @@ const GroupsPage = lazy(() =>
     default: m.GroupsPage,
   })),
 );
+const PoolStatusPage = lazy(() =>
+  import("@/components/pool-status-page").then((m) => ({
+    default: m.PoolStatusPage,
+  })),
+);
 
-type Tab = "overview" | "credentials" | "keys" | "groups" | "traces";
+type Tab = "overview" | "credentials" | "pool" | "keys" | "groups" | "traces";
 
 const TABS: {
   key: Tab;
@@ -63,6 +68,12 @@ const TABS: {
     label: "凭据管理",
     mobileLabel: "凭据",
     icon: <Server className="h-3.5 w-3.5" />,
+  },
+  {
+    key: "pool",
+    label: "池状态",
+    mobileLabel: "池",
+    icon: <Gauge className="h-3.5 w-3.5" />,
   },
   {
     key: "keys",
@@ -88,6 +99,7 @@ function readTabFromHash(): Tab {
   const h = window.location.hash.replace(/^#\/?/, "");
   if (
     h === "credentials" ||
+    h === "pool" ||
     h === "keys" ||
     h === "groups" ||
     h === "overview" ||
@@ -375,6 +387,7 @@ function AppMain({ onLogout, tab }: { onLogout: () => void; tab: Tab }) {
       <Suspense fallback={<div className="text-sm text-muted-foreground">加载中…</div>}>
         {tab === "overview" && <OverviewPage />}
         {tab === "credentials" && <Dashboard onLogout={onLogout} embedded />}
+        {tab === "pool" && <PoolStatusPage />}
         {tab === "keys" && <ClientKeysPage />}
         {tab === "groups" && <GroupsPage />}
         {tab === "traces" && <TraceLogPage />}
